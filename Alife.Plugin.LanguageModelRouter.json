@@ -16,7 +16,7 @@
     "1.0.0": {
       "date": "2026-07-04",
       "note": "AI一句话切换渠道、手动切换、探测模型列表、自动容灾开关、各组独立配置",
-      "file": ""
+      "file": "https://github.com/L134283/Alife.Plugin.LanguageModelRouter/releases/download/LanguageModelRouter-v1.0.0/LanguageModelRouter-v1.0.0.zip"
     }
   }
 }
