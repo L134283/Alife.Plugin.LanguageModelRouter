@@ -21,7 +21,7 @@
     "1.0.1": {
       "date": "2026-07-04",
       "note": "修复系统提示词中函数文档重复注入",
-      "file": ""
+      "file": "https://github.com/L134283/Alife.Plugin.LanguageModelRouter/releases/download/LanguageModelRouter-v1.0.1/Alife.Plugin.LanguageModelRouter.zip"
     }
   }
 }
