@@ -63,9 +63,8 @@ public class LanguageModelRouter(
                 sb.AppendLine($"- 第{i + 1}组{label}：{groups[i].Endpoint} → {groups[i].ModelId}");
             }
         }
-
         sb.AppendLine();
-        sb.AppendLine(handler.FunctionDocument());
+
         Prompt(sb.ToString());
     }
 
