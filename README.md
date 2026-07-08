@@ -51,4 +51,4 @@ AI 会调用 SwitchModelGroup 函数直接切换，无需手动操作 UI。
 
 ## 版本
 
-v1.0.1
+v1.0.2

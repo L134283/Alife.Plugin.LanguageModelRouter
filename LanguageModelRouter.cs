@@ -225,8 +225,14 @@ public class LanguageModelRouter(
         // 传动态委托，每次请求从当前 Configuration 重建组列表
         FallbackHandler fallbackHandler = new(handler,
             () => BuildFallbackGroups(Configuration!),
-            errorKeywords, config.RetryDelayMs, logger,
-            () => ForcedGroupIndex, () => AutoFailoverEnabled);
+            errorKeywords, config.RetryDelayMs,
+            () => ForcedGroupIndex, () => AutoFailoverEnabled,
+            onFailover: idx =>
+            {
+                string label = GetGroupLabel(idx, Configuration);
+                Console.WriteLine($"[灵枢] 已容灾切换 → {label}");
+                Poke($"灵枢已触发容灾，请告知用户，当前切换到了{label}");
+            });
 
         HttpClient httpClient = new(fallbackHandler)
         {
@@ -299,7 +305,7 @@ public class LanguageModelRouter(
             }
             catch (Exception ex)
             {
-                logger.LogWarning("[灵枢] ExtraBody 解析失败: {Error}", ex.Message);
+                Console.WriteLine($"[灵枢] ExtraBody 解析失败: {ex.Message}");
             }
         }
 

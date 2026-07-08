@@ -9,7 +9,6 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Alife.Framework;
-using Microsoft.Extensions.Logging;
 using Newtonsoft.Json.Linq;
 
 namespace Alife.Plugin.LanguageModelRouter;
@@ -24,9 +23,9 @@ public class FallbackHandler : DelegatingHandler
     readonly Func<List<FallbackGroup>> getGroups;
     readonly List<string> errorKeywords;
     readonly int retryDelayMs;
-    readonly ILogger? logger;
     readonly Func<int> getForcedGroupIndex;
     readonly Func<bool> getAutoFailoverEnabled;
+    readonly Action<int>? onFailover;
 
     static readonly string[] ReasoningKeys = {
         "reasoning_content",
@@ -41,17 +40,17 @@ public class FallbackHandler : DelegatingHandler
         Func<List<FallbackGroup>> getGroups,
         List<string> errorKeywords,
         int retryDelayMs,
-        ILogger? logger = null,
         Func<int>? getForcedGroupIndex = null,
-        Func<bool>? getAutoFailoverEnabled = null
+        Func<bool>? getAutoFailoverEnabled = null,
+        Action<int>? onFailover = null
     ) : base(innerHandler)
     {
         this.getGroups = getGroups;
         this.errorKeywords = errorKeywords;
         this.retryDelayMs = retryDelayMs;
-        this.logger = logger;
         this.getForcedGroupIndex = getForcedGroupIndex ?? (() => -1);
         this.getAutoFailoverEnabled = getAutoFailoverEnabled ?? (() => true);
+        this.onFailover = onFailover;
     }
 
     protected override async Task<HttpResponseMessage> SendAsync(
@@ -99,13 +98,17 @@ public class FallbackHandler : DelegatingHandler
 
             if (response.IsSuccessStatusCode)
             {
+                if (attempt > 0)
+                {
+                    onFailover?.Invoke(groupIdx);
+                }
                 ProcessReasoningStream(response);
                 return response;
             }
 
             if (!autoEnabled)
             {
-                logger?.LogWarning("[灵枢] #{N} {Host} ✗{Code} 容灾关闭", groupIdx + 1, group.Endpoint.Host, (int)response.StatusCode);
+                Console.WriteLine($"[灵枢] #{groupIdx + 1} {group.Endpoint.Host} ✗{(int)response.StatusCode} 容灾已关闭");
                 return response;
             }
 
@@ -118,12 +121,11 @@ public class FallbackHandler : DelegatingHandler
 
             if (!shouldFallback)
             {
-                logger?.LogWarning("[灵枢] #{N} {Host} ✗{Code}", groupIdx + 1, group.Endpoint.Host, (int)response.StatusCode);
+                Console.WriteLine($"[灵枢] #{groupIdx + 1} {group.Endpoint.Host} ✗{(int)response.StatusCode}");
                 return response;
             }
 
-            logger?.LogWarning("[灵枢] #{N} {Host} ✗{Code} → 容灾切换",
-                groupIdx + 1, group.Endpoint.Host, (int)response.StatusCode);
+            Console.WriteLine($"[灵枢] #{groupIdx + 1} {group.Endpoint.Host} ✗{(int)response.StatusCode} → 容灾切换");
 
             if (attempt < maxAttempts - 1)
             {
@@ -132,6 +134,7 @@ public class FallbackHandler : DelegatingHandler
             }
         }
 
+        Console.WriteLine("[灵枢] 所有渠道均已失败");
         return lastResponse!;
     }
 
@@ -151,19 +154,6 @@ public class FallbackHandler : DelegatingHandler
         catch
         {
             return false;
-        }
-    }
-
-    async Task<string> ReadErrorSnippetAsync(HttpResponseMessage response, CancellationToken ct)
-    {
-        try
-        {
-            string body = await response.Content.ReadAsStringAsync(ct);
-            return body.Length > 200 ? body[..200] : body;
-        }
-        catch
-        {
-            return "";
         }
     }
 
@@ -322,7 +312,7 @@ public class FallbackHandler : DelegatingHandler
         public override long Length => innerStream.Length;
         public override long Position { get => innerStream.Position; set => throw new NotSupportedException(); }
         public override void Flush() => innerStream.Flush();
-        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException("Use ReadAsync");
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException("请使用 ReadAsync");
         public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
         public override void SetLength(long value) => throw new NotSupportedException();
         public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
