@@ -32,6 +32,9 @@ public class LanguageModelRouter(
     /// <summary>是否启用自动容灾切换</summary>
     internal static volatile bool AutoFailoverEnabled = true;
 
+    /// <summary>下一次请求模拟 429 容灾（一次性，自动复位）</summary>
+    internal static volatile bool TestForceFailover = false;
+
     internal static Action? OnGroupChanged;
 
     public override async Task AwakeAsync(AwakeContext context)
@@ -115,6 +118,28 @@ public class LanguageModelRouter(
         System.Console.WriteLine($"[灵枢] 已切换 → {label}");
         Poke($"已切换到{label}");
         OnGroupChanged?.Invoke();
+        return Task.CompletedTask;
+    }
+
+    [XmlFunction(FunctionMode.OneShot)]
+    [Description("模拟一次容灾测试：下次对话时将自动触发假 429 错误，验证容灾切换是否正常工作。使用后自动复位。")]
+    public Task SimulateFailoverTest()
+    {
+        if (!AutoFailoverEnabled)
+        {
+            Poke("自动容灾当前已关闭，无法测试。请在容灾设置中开启后重试。");
+            return Task.CompletedTask;
+        }
+
+        var groups = BuildFallbackGroups(Configuration!);
+        if (groups.Count < 2)
+        {
+            Poke($"当前仅配置了 {groups.Count} 组渠道，没有备用渠道可切换。请至少配置两组后再测试。");
+            return Task.CompletedTask;
+        }
+
+        TestForceFailover = true;
+        Poke("容灾测试已启动，请发送下一条消息，系统将模拟第 1 组返回 429 并自动切换到备用渠道。");
         return Task.CompletedTask;
     }
 
@@ -232,6 +257,12 @@ public class LanguageModelRouter(
                 string label = GetGroupLabel(idx, Configuration);
                 Console.WriteLine($"[灵枢] 已容灾切换 → {label}");
                 Poke($"灵枢已触发容灾，请告知用户，当前切换到了{label}");
+            },
+            consumeTestFlag: () =>
+            {
+                if (!TestForceFailover) return false;
+                TestForceFailover = false;
+                return true;
             });
 
         HttpClient httpClient = new(fallbackHandler)

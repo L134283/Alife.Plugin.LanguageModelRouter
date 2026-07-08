@@ -26,6 +26,7 @@ public class FallbackHandler : DelegatingHandler
     readonly Func<int> getForcedGroupIndex;
     readonly Func<bool> getAutoFailoverEnabled;
     readonly Action<int>? onFailover;
+    readonly Func<bool>? consumeTestFlag;
 
     static readonly string[] ReasoningKeys = {
         "reasoning_content",
@@ -42,7 +43,8 @@ public class FallbackHandler : DelegatingHandler
         int retryDelayMs,
         Func<int>? getForcedGroupIndex = null,
         Func<bool>? getAutoFailoverEnabled = null,
-        Action<int>? onFailover = null
+        Action<int>? onFailover = null,
+        Func<bool>? consumeTestFlag = null
     ) : base(innerHandler)
     {
         this.getGroups = getGroups;
@@ -51,6 +53,7 @@ public class FallbackHandler : DelegatingHandler
         this.getForcedGroupIndex = getForcedGroupIndex ?? (() => -1);
         this.getAutoFailoverEnabled = getAutoFailoverEnabled ?? (() => true);
         this.onFailover = onFailover;
+        this.consumeTestFlag = consumeTestFlag;
     }
 
     protected override async Task<HttpResponseMessage> SendAsync(
@@ -93,7 +96,18 @@ public class FallbackHandler : DelegatingHandler
             if (attempt > 0 && retryDelayMs > 0)
                 await Task.Delay(retryDelayMs, cancellationToken);
 
-            HttpResponseMessage response = await base.SendAsync(req, cancellationToken);
+            HttpResponseMessage response;
+            if (attempt == 0 && consumeTestFlag?.Invoke() == true)
+            {
+                response = new HttpResponseMessage(HttpStatusCode.TooManyRequests)
+                {
+                    Content = new StringContent("{\"error\":\"[灵枢 测试] 模拟 429\"}")
+                };
+            }
+            else
+            {
+                response = await base.SendAsync(req, cancellationToken);
+            }
             lastResponse = response;
 
             if (response.IsSuccessStatusCode)
@@ -102,7 +116,7 @@ public class FallbackHandler : DelegatingHandler
                 {
                     onFailover?.Invoke(groupIdx);
                 }
-                ProcessReasoningStream(response);
+                await ProcessReasoningStreamAsync(response);
                 return response;
             }
 
@@ -125,7 +139,10 @@ public class FallbackHandler : DelegatingHandler
                 return response;
             }
 
-            Console.WriteLine($"[灵枢] #{groupIdx + 1} {group.Endpoint.Host} ✗{(int)response.StatusCode} → 容灾切换");
+            if (attempt < maxAttempts - 1)
+                Console.WriteLine($"[灵枢] #{groupIdx + 1} {group.Endpoint.Host} ✗{(int)response.StatusCode} → 容灾切换");
+            else
+                Console.WriteLine($"[灵枢] #{groupIdx + 1} {group.Endpoint.Host} ✗{(int)response.StatusCode}，无备用渠道可切换");
 
             if (attempt < maxAttempts - 1)
             {
@@ -224,11 +241,11 @@ public class FallbackHandler : DelegatingHandler
     /// <summary>
     /// 处理 SSE 流中的 reasoning_content → content 转换
     /// </summary>
-    void ProcessReasoningStream(HttpResponseMessage response)
+    async Task ProcessReasoningStreamAsync(HttpResponseMessage response)
     {
         if (response.Content.Headers.ContentType?.MediaType == "text/event-stream")
         {
-            Stream stream = response.Content.ReadAsStreamAsync().GetAwaiter().GetResult();
+            Stream stream = await response.Content.ReadAsStreamAsync();
             response.Content = new StreamContent(new CompatibleStreamWrapper(stream));
             response.Content.Headers.ContentType = new MediaTypeHeaderValue("text/event-stream");
         }
