@@ -25,8 +25,13 @@
     },
     "1.0.2": {
       "date": "2026-07-04",
-      "note": "容灾切换后通知AI、日志全中文化、死代码清理、ProcessReasoningStream异步修复、429模拟测试、无备用渠道提示",
+      "note": "容灾切换后通知AI、日志全中文化、异步修复、429模拟测试",
       "file": "https://github.com/L134283/Alife.Plugin.LanguageModelRouter/releases/download/LanguageModelRouter-v1.0.2/Alife.Plugin.LanguageModelRouter.zip"
+    },
+    "1.0.3": {
+      "date": "2026-07-04",
+      "note": "修复重复容灾/Poke、新增优先主渠道模式（静默容灾）、ProcessReasoningStream异步修复",
+      "file": ""
     }
   }
 }

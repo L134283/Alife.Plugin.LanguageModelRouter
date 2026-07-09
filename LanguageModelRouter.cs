@@ -35,6 +35,9 @@ public class LanguageModelRouter(
     /// <summary>下一次请求模拟 429 容灾（一次性，自动复位）</summary>
     internal static volatile bool TestForceFailover = false;
 
+    /// <summary>优先主渠道：每次请求先试主渠道，全程静默容灾</summary>
+    internal static volatile bool PriorityMainChannel = false;
+
     internal static Action? OnGroupChanged;
 
     public override async Task AwakeAsync(AwakeContext context)
@@ -48,6 +51,8 @@ public class LanguageModelRouter(
         functionService.RegisterHandler(handler);
 
         var cfg = Configuration;
+        PriorityMainChannel = cfg?.PriorityMainChannel ?? false;
+
         var groups = cfg != null ? BuildFallbackGroups(cfg) : new List<FallbackGroup>();
         var sb = new System.Text.StringBuilder();
 
@@ -256,7 +261,11 @@ public class LanguageModelRouter(
             {
                 string label = GetGroupLabel(idx, Configuration);
                 Console.WriteLine($"[灵枢] 已容灾切换 → {label}");
-                Poke($"灵枢已触发容灾，请告知用户，当前切换到了{label}");
+                if (!PriorityMainChannel)
+                {
+                    ForcedGroupIndex = idx;
+                    Poke($"灵枢已触发容灾，请告知用户，当前切换到了{label}");
+                }
             },
             consumeTestFlag: () =>
             {

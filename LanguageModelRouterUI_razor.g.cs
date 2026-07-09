@@ -374,6 +374,29 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
         b.CloseElement();
 
         b.CloseElement();
+
+        b.OpenElement(_seq++, "div");
+        b.AddAttribute(_seq++, "style", "display:flex;align-items:center;gap:8px;margin-bottom:12px;");
+
+        b.OpenElement(_seq++, "input");
+        b.AddAttribute(_seq++, "type", "checkbox");
+        b.AddAttribute(_seq++, "id", "priorityMainCheck");
+        b.AddAttribute(_seq++, "checked", LanguageModelRouter.PriorityMainChannel);
+        b.AddAttribute(_seq++, "onchange", EventCallback.Factory.Create<ChangeEventArgs>(this, e =>
+        {
+            LanguageModelRouter.PriorityMainChannel = e.Value is bool b ? b : !LanguageModelRouter.PriorityMainChannel;
+            Configuration!.PriorityMainChannel = LanguageModelRouter.PriorityMainChannel;
+            StateHasChanged();
+        }));
+        b.CloseElement();
+
+        b.OpenElement(_seq++, "label");
+        b.AddAttribute(_seq++, "for", "priorityMainCheck");
+        b.AddAttribute(_seq++, "style", "font-size:13px;color:#333;");
+        b.AddContent(_seq++, "\u4f18\u5148\u4e3b\u6e20\u9053\uff08\u6bcf\u6b21\u5bf9\u8bdd\u4f18\u5148\u5c1d\u8bd5\u4e3b\u6e20\u9053\uff0c\u5bb9\u707e\u5168\u7a0b\u9759\u9ed8\uff0c\u4ec5\u65e5\u5fd7\u53ef\u89c1\uff09");
+        b.CloseElement();
+
+        b.CloseElement();
     }
 
     // ==================== Switch ====================
