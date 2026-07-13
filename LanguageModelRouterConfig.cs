@@ -44,4 +44,5 @@ public class LanguageModelRouterConfig
     public string? ErrorKeywords { get; set; } // 逗号分隔
     public int RetryDelayMs { get; set; } = 1000;
     public bool PriorityMainChannel { get; set; } = false; // 优先主渠道：每次请求先试主渠道，全程静默容灾
+    public bool ShowThinkingChain { get; set; } = true; // 是否将 reasoning/thinking 转为可见思维链
 }

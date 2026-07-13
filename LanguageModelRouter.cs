@@ -38,6 +38,9 @@ public class LanguageModelRouter(
     /// <summary>优先主渠道：每次请求先试主渠道，全程静默容灾</summary>
     internal static volatile bool PriorityMainChannel = false;
 
+    /// <summary>是否显示思维链（将 reasoning/thinking 转为可见 content）</summary>
+    internal static volatile bool ShowThinkingChain = true;
+
     internal static Action? OnGroupChanged;
 
     public override async Task AwakeAsync(AwakeContext context)
@@ -52,6 +55,7 @@ public class LanguageModelRouter(
 
         var cfg = Configuration;
         PriorityMainChannel = cfg?.PriorityMainChannel ?? false;
+        ShowThinkingChain = cfg?.ShowThinkingChain ?? true;
 
         var groups = cfg != null ? BuildFallbackGroups(cfg) : new List<FallbackGroup>();
         var sb = new System.Text.StringBuilder();
@@ -272,7 +276,8 @@ public class LanguageModelRouter(
                 if (!TestForceFailover) return false;
                 TestForceFailover = false;
                 return true;
-            });
+            },
+            getShowThinkingChain: () => ShowThinkingChain);
 
         HttpClient httpClient = new(fallbackHandler)
         {

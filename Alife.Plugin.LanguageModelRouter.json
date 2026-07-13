@@ -32,6 +32,11 @@
       "date": "2026-07-04",
       "note": "修复重复容灾/Poke、新增优先主渠道模式（静默容灾）、ProcessReasoningStream异步修复",
       "file": "https://github.com/L134283/Alife.Plugin.LanguageModelRouter/releases/download/LanguageModelRouter-v1.0.3/Alife.Plugin.LanguageModelRouter.zip"
+    },
+    "1.0.4": {
+      "date": "2026-07-14",
+      "note": "新增思维链显示实时开关；UI 重塑为灵枢·金黄圣域神秘风",
+      "file": "https://github.com/L134283/Alife.Plugin.LanguageModelRouter/releases/download/LanguageModelRouter-v1.0.4/Alife.Plugin.LanguageModelRouter.zip"
     }
   }
 }

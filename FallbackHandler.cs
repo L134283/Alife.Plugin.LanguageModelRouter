@@ -27,6 +27,7 @@ public class FallbackHandler : DelegatingHandler
     readonly Func<bool> getAutoFailoverEnabled;
     readonly Action<int>? onFailover;
     readonly Func<bool>? consumeTestFlag;
+    readonly Func<bool> getShowThinkingChain;
 
     static readonly string[] ReasoningKeys = {
         "reasoning_content",
@@ -44,7 +45,8 @@ public class FallbackHandler : DelegatingHandler
         Func<int>? getForcedGroupIndex = null,
         Func<bool>? getAutoFailoverEnabled = null,
         Action<int>? onFailover = null,
-        Func<bool>? consumeTestFlag = null
+        Func<bool>? consumeTestFlag = null,
+        Func<bool>? getShowThinkingChain = null
     ) : base(innerHandler)
     {
         this.getGroups = getGroups;
@@ -54,6 +56,7 @@ public class FallbackHandler : DelegatingHandler
         this.getAutoFailoverEnabled = getAutoFailoverEnabled ?? (() => true);
         this.onFailover = onFailover;
         this.consumeTestFlag = consumeTestFlag;
+        this.getShowThinkingChain = getShowThinkingChain ?? (() => true);
     }
 
     protected override async Task<HttpResponseMessage> SendAsync(
@@ -246,7 +249,7 @@ public class FallbackHandler : DelegatingHandler
         if (response.Content.Headers.ContentType?.MediaType == "text/event-stream")
         {
             Stream stream = await response.Content.ReadAsStreamAsync();
-            response.Content = new StreamContent(new CompatibleStreamWrapper(stream));
+            response.Content = new StreamContent(new CompatibleStreamWrapper(stream, getShowThinkingChain));
             response.Content.Headers.ContentType = new MediaTypeHeaderValue("text/event-stream");
         }
     }
@@ -256,11 +259,13 @@ public class FallbackHandler : DelegatingHandler
         readonly Stream innerStream;
         readonly StreamReader reader;
         readonly MemoryStream outputBuffer = new();
+        readonly Func<bool> getShowThinkingChain;
 
-        public CompatibleStreamWrapper(Stream innerStream)
+        public CompatibleStreamWrapper(Stream innerStream, Func<bool> getShowThinkingChain)
         {
             this.innerStream = innerStream;
             this.reader = new StreamReader(innerStream, Encoding.UTF8);
+            this.getShowThinkingChain = getShowThinkingChain;
         }
 
         public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
@@ -296,6 +301,7 @@ public class FallbackHandler : DelegatingHandler
                 JToken? delta = obj["choices"]?[0]?["delta"];
                 if (delta is JObject deltaObj)
                 {
+                    bool showThinking = getShowThinkingChain();
                     foreach (var key in ReasoningKeys)
                     {
                         JToken? reasoning = deltaObj[key];
@@ -304,11 +310,14 @@ public class FallbackHandler : DelegatingHandler
                             string val = reasoning.ToString();
                             if (!string.IsNullOrEmpty(val))
                             {
-                                JToken? curContent = deltaObj["content"];
-                                bool hasContent = curContent != null && curContent.Type != JTokenType.Null
-                                    && !string.IsNullOrEmpty(curContent.ToString());
-                                if (!hasContent)
-                                    deltaObj["content"] = $"{ChatBot.ThinkContentPrefix}{val}";
+                                if (showThinking)
+                                {
+                                    JToken? curContent = deltaObj["content"];
+                                    bool hasContent = curContent != null && curContent.Type != JTokenType.Null
+                                        && !string.IsNullOrEmpty(curContent.ToString());
+                                    if (!hasContent)
+                                        deltaObj["content"] = $"{ChatBot.ThinkContentPrefix}{val}";
+                                }
                                 deltaObj.Remove(key);
                                 break;
                             }
