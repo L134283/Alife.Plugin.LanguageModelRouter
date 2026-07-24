@@ -45,4 +45,8 @@ public class LanguageModelRouterConfig
     public int RetryDelayMs { get; set; } = 1000;
     public bool PriorityMainChannel { get; set; } = false; // 优先主渠道：每次请求先试主渠道，全程静默容灾
     public bool ShowThinkingChain { get; set; } = true; // 是否将 reasoning/thinking 转为可见思维链
+
+    // 运行时状态（每个桌宠独立，随配置持久化）
+    public int ForcedGroupIndex { get; set; } = -1; // -1=自动容灾, 0~3=强制使用第N组
+    public bool AutoFailoverEnabled { get; set; } = true; // 是否启用自动容灾切换
 }
