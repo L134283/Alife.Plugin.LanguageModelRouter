@@ -26,21 +26,10 @@ public class LanguageModelRouter(
 {
     public LanguageModelRouterConfig? Configuration { get; set; }
 
-    /// <summary>-1=自动容灾, 0~3=强制使用第N组</summary>
-    internal static volatile int ForcedGroupIndex = -1;
-
-    /// <summary>是否启用自动容灾切换</summary>
-    internal static volatile bool AutoFailoverEnabled = true;
-
     /// <summary>下一次请求模拟 429 容灾（一次性，自动复位）</summary>
-    internal static volatile bool TestForceFailover = false;
+    internal volatile bool TestForceFailover = false;
 
-    /// <summary>优先主渠道：每次请求先试主渠道，全程静默容灾</summary>
-    internal static volatile bool PriorityMainChannel = false;
-
-    /// <summary>是否显示思维链（将 reasoning/thinking 转为可见 content）</summary>
-    internal static volatile bool ShowThinkingChain = true;
-
+    /// <summary>渠道切换通知（静态委托，UI 订阅后刷新显示）</summary>
     internal static Action? OnGroupChanged;
 
     public override async Task AwakeAsync(AwakeContext context)
@@ -54,8 +43,6 @@ public class LanguageModelRouter(
         functionService.RegisterHandler(handler);
 
         var cfg = Configuration;
-        PriorityMainChannel = cfg?.PriorityMainChannel ?? false;
-        ShowThinkingChain = cfg?.ShowThinkingChain ?? true;
 
         var groups = cfg != null ? BuildFallbackGroups(cfg) : new List<FallbackGroup>();
         var sb = new System.Text.StringBuilder();
@@ -122,7 +109,7 @@ public class LanguageModelRouter(
             return Task.CompletedTask;
         }
 
-        ForcedGroupIndex = targetIdx;
+        Configuration!.ForcedGroupIndex = targetIdx;
         string label = GetGroupLabel(targetIdx, cfg);
         System.Console.WriteLine($"[灵枢] 已切换 → {label}");
         Poke($"已切换到{label}");
@@ -134,7 +121,7 @@ public class LanguageModelRouter(
     [Description("模拟一次容灾测试：下次对话时将自动触发假 429 错误，验证容灾切换是否正常工作。使用后自动复位。")]
     public Task SimulateFailoverTest()
     {
-        if (!AutoFailoverEnabled)
+        if (!Configuration!.AutoFailoverEnabled)
         {
             Poke("自动容灾当前已关闭，无法测试。请在容灾设置中开启后重试。");
             return Task.CompletedTask;
@@ -260,14 +247,14 @@ public class LanguageModelRouter(
         FallbackHandler fallbackHandler = new(handler,
             () => BuildFallbackGroups(Configuration!),
             errorKeywords, config.RetryDelayMs,
-            () => ForcedGroupIndex, () => AutoFailoverEnabled,
+            () => Configuration!.ForcedGroupIndex, () => Configuration!.AutoFailoverEnabled,
             onFailover: idx =>
             {
                 string label = GetGroupLabel(idx, Configuration);
                 Console.WriteLine($"[灵枢] 已容灾切换 → {label}");
-                if (!PriorityMainChannel)
+                if (!Configuration!.PriorityMainChannel)
                 {
-                    ForcedGroupIndex = idx;
+                    Configuration!.ForcedGroupIndex = idx;
                     Poke($"灵枢已触发容灾，请告知用户，当前切换到了{label}");
                 }
             },
@@ -277,7 +264,7 @@ public class LanguageModelRouter(
                 TestForceFailover = false;
                 return true;
             },
-            getShowThinkingChain: () => ShowThinkingChain);
+            getShowThinkingChain: () => Configuration!.ShowThinkingChain);
 
         HttpClient httpClient = new(fallbackHandler)
         {
@@ -303,7 +290,7 @@ public class LanguageModelRouter(
     public PromptExecutionSettings ProvidePromptExecutionSettings()
     {
         var config = Configuration!;
-        int idx = ForcedGroupIndex >= 0 ? ForcedGroupIndex : 0;
+        int idx = config.ForcedGroupIndex >= 0 ? config.ForcedGroupIndex : 0;
         if (idx >= BuildFallbackGroups(config).Count) idx = 0;
 
         string? effort = idx switch
