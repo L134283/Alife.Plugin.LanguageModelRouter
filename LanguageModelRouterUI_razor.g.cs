@@ -1006,12 +1006,7 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
 
     protected override void OnInitialized()
     {
-        LanguageModelRouter.OnGroupChanged = () => InvokeAsync(StateHasChanged);
-        if (Configuration != null)
-        {
-            LanguageModelRouter.PriorityMainChannel = Configuration.PriorityMainChannel;
-            LanguageModelRouter.ShowThinkingChain = Configuration.ShowThinkingChain;
-        }
+        LanguageModelRouter.OnGroupChanged += () => InvokeAsync(StateHasChanged);
     }
 
     protected override void BuildRenderTree(RenderTreeBuilder b)
@@ -1198,15 +1193,15 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
         b.AddAttribute(_seq++, "class", "ls-status-row");
         b.AddContent(_seq++, $"当前状态：{GetActiveGroupLabel()}");
         b.OpenElement(_seq++, "span");
-        b.AddAttribute(_seq++, "class", LanguageModelRouter.ForcedGroupIndex < 0 ? "ls-badge ls-badge-on" : "ls-badge ls-badge-active");
-        b.AddContent(_seq++, LanguageModelRouter.ForcedGroupIndex < 0 ? "自动容灾" : "强制锁定");
+        b.AddAttribute(_seq++, "class", Configuration.ForcedGroupIndex < 0 ? "ls-badge ls-badge-on" : "ls-badge ls-badge-active");
+        b.AddContent(_seq++, Configuration.ForcedGroupIndex < 0 ? "自动容灾" : "强制锁定");
         b.CloseElement();
         b.CloseElement();
 
         b.OpenElement(_seq++, "div");
         b.AddAttribute(_seq++, "class", "ls-btn-row");
 
-        int forcedIdx = LanguageModelRouter.ForcedGroupIndex;
+        int forcedIdx = Configuration.ForcedGroupIndex;
         for (int g = 0; g < 4; g++)
         {
             int group = g;
@@ -1291,7 +1286,7 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
             b.AddAttribute(_seq++, "class", IsGroupConfigured(0) ? "ls-badge ls-badge-on" : "ls-badge ls-badge-off");
             b.AddContent(_seq++, IsGroupConfigured(0) ? "✦ 已配置" : "○ 未配置");
             b.CloseElement();
-            if (LanguageModelRouter.ForcedGroupIndex == 0 || LanguageModelRouter.ForcedGroupIndex < 0)
+            if (Configuration.ForcedGroupIndex == 0 || Configuration.ForcedGroupIndex < 0)
             {
                 b.OpenElement(_seq++, "span");
                 b.AddAttribute(_seq++, "class", "ls-badge ls-badge-active");
@@ -1368,7 +1363,7 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
             b.AddAttribute(_seq++, "class", IsGroupConfigured(g) ? "ls-badge ls-badge-on" : "ls-badge ls-badge-off");
             b.AddContent(_seq++, IsGroupConfigured(g) ? "✦ 已配置" : "○ 未配置");
             b.CloseElement();
-            if (LanguageModelRouter.ForcedGroupIndex == g)
+            if (Configuration.ForcedGroupIndex == g)
             {
                 b.OpenElement(_seq++, "span");
                 b.AddAttribute(_seq++, "class", "ls-badge ls-badge-active");
@@ -1558,10 +1553,10 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
         b.OpenElement(_seq++, "input");
         b.AddAttribute(_seq++, "type", "checkbox");
         b.AddAttribute(_seq++, "id", "autoFailoverCheck");
-        b.AddAttribute(_seq++, "checked", LanguageModelRouter.AutoFailoverEnabled);
+        b.AddAttribute(_seq++, "checked", Configuration.AutoFailoverEnabled);
         b.AddAttribute(_seq++, "onchange", EventCallback.Factory.Create<ChangeEventArgs>(this, e =>
         {
-            LanguageModelRouter.AutoFailoverEnabled = e.Value is bool bv ? bv : !LanguageModelRouter.AutoFailoverEnabled;
+            Configuration.AutoFailoverEnabled = e.Value is bool bv ? bv : !Configuration.AutoFailoverEnabled;
             StateHasChanged();
         }));
         b.CloseElement();
@@ -1579,11 +1574,10 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
         b.OpenElement(_seq++, "input");
         b.AddAttribute(_seq++, "type", "checkbox");
         b.AddAttribute(_seq++, "id", "priorityMainCheck");
-        b.AddAttribute(_seq++, "checked", LanguageModelRouter.PriorityMainChannel);
+        b.AddAttribute(_seq++, "checked", Configuration.PriorityMainChannel);
         b.AddAttribute(_seq++, "onchange", EventCallback.Factory.Create<ChangeEventArgs>(this, e =>
         {
-            LanguageModelRouter.PriorityMainChannel = e.Value is bool bv ? bv : !LanguageModelRouter.PriorityMainChannel;
-            Configuration!.PriorityMainChannel = LanguageModelRouter.PriorityMainChannel;
+            Configuration.PriorityMainChannel = e.Value is bool bv ? bv : !Configuration.PriorityMainChannel;
             StateHasChanged();
         }));
         b.CloseElement();
@@ -1601,11 +1595,10 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
         b.OpenElement(_seq++, "input");
         b.AddAttribute(_seq++, "type", "checkbox");
         b.AddAttribute(_seq++, "id", "showThinkingCheck");
-        b.AddAttribute(_seq++, "checked", LanguageModelRouter.ShowThinkingChain);
+        b.AddAttribute(_seq++, "checked", Configuration.ShowThinkingChain);
         b.AddAttribute(_seq++, "onchange", EventCallback.Factory.Create<ChangeEventArgs>(this, e =>
         {
-            LanguageModelRouter.ShowThinkingChain = e.Value is bool bv ? bv : !LanguageModelRouter.ShowThinkingChain;
-            Configuration!.ShowThinkingChain = LanguageModelRouter.ShowThinkingChain;
+            Configuration.ShowThinkingChain = e.Value is bool bv ? bv : !Configuration.ShowThinkingChain;
             StateHasChanged();
         }));
         b.CloseElement();
@@ -1621,7 +1614,7 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
 
     void SwitchTo(int groupIndex)
     {
-        LanguageModelRouter.ForcedGroupIndex = groupIndex;
+        Configuration.ForcedGroupIndex = groupIndex;
         LanguageModelRouter.OnGroupChanged?.Invoke();
         StateHasChanged();
     }
@@ -1642,7 +1635,7 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
 
     string GetActiveGroupLabel()
     {
-        int idx = LanguageModelRouter.ForcedGroupIndex;
+        int idx = Configuration.ForcedGroupIndex;
         if (idx < 0) return "自动容灾";
         return LanguageModelRouter.GetGroupLabel(idx, Configuration);
     }
