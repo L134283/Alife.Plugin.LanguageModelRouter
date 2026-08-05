@@ -6,6 +6,10 @@
   "dependencies": {
     "Alife.Function.FunctionCaller": ""
   },
+  "environments": {
+    "nuget": {},
+    "pip": {}
+  },
   "tags": [
     "语言模型"
   ],
