@@ -336,7 +336,22 @@ public class LanguageModelRouter(
         JsonNode? message = null;
         if (node["choices"] is JsonArray choices && choices.Count > 0)
             message = isJsonResponse ? choices[0]?["message"] : choices[0]?["delta"];
-        string? content = message?["content"]?.GetValue<string>();
+
+        if (message == null)
+        {
+            // 无内容帧：若是 error 帧则抛出真实错误，避免上游报错被当作"空回复"静默吞掉
+            if (node["error"] is JsonObject errObj)
+            {
+                string errMsg = errObj["message"]?.ToString() ?? errObj.ToString();
+                throw new InvalidOperationException($"渠道返回错误：{errMsg}");
+            }
+            return;
+        }
+
+        // content 可能是字符串或数组（多模态）；非字符串时跳过，避免 GetValue<string> 抛异常
+        string? content = null;
+        if (message["content"] is JsonValue cv && cv.TryGetValue<string>(out string? cs))
+            content = cs;
         if (!string.IsNullOrEmpty(content))
         {
             if (content.StartsWith(ThinkContentPrefix))
@@ -617,9 +632,18 @@ public class LanguageModelRouter(
             var ch = config.Groups[i];
             if (!ch.IsConfigured) continue;
 
+            Uri uri;
+            try { uri = new Uri(ch.Endpoint); }
+            catch
+            {
+                // 一组 Endpoint 格式非法不应拖垮整个插件（否则 EnsureHttpClient/每次请求都会崩），跳过该组并告警
+                Console.WriteLine($"[灵枢] 第 {i + 1} 组 Endpoint 格式非法，已跳过：{ch.Endpoint}");
+                continue;
+            }
+
             groups.Add(new FallbackGroup(
                 i,
-                new Uri(ch.Endpoint),
+                uri,
                 ch.ModelId ?? "",
                 ch.ApiKey,
                 ParseExtraHeaders(ch.ExtraHeaders),

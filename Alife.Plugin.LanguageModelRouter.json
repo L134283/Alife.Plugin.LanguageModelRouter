@@ -51,7 +51,7 @@
     },
     "4.0.1": {
       "date": "2026-08-06",
-      "note": "修复严重问题：AI 回复未写入对话历史，导致每次重新开启对话都丢失之前内容；手动补写 ChatHistory（对齐官方 OpenAI 语言模型机制）",
+      "note": "修复严重问题：AI 回复未写入对话历史导致重开对话丢失内容（手动补写 ChatHistory，对齐官方机制）；非法 Endpoint 不再拖垮整个插件（跳过该组）；识别上游错误帧避免空回复；多模态 content 兼容加固",
       "file": "https://github.com/L134283/Alife.Plugin.LanguageModelRouter/releases/download/LanguageModelRouter-v4.0.1/Alife.Plugin.LanguageModelRouter.zip"
     }
   }
