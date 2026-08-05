@@ -256,12 +256,24 @@ public class LanguageModelRouter(
 
         // 思考内容只走事件流，写回历史时仅保留纯文本，避免 __THINK__ 前缀污染后续上下文
         string aiMessage = nonThinkingContent.ToString();
-        if (chatHistoryAgentThread.ChatHistory.Count > 0)
+        var history = chatHistoryAgentThread.ChatHistory;
+
+        // 官方 OpenAILanguageModel 依赖 SK ChatCompletionAgent 自动把 AI 回复写入 ChatHistory；
+        // 本插件用裸 HttpClient 发送请求，AI 回复不会自动落库——必须手动写回，否则对话历史无法保存
+        // （下次开启仍是旧历史）。若最后一条已是带 __THINK__ 前缀的 Assistant 消息（思考链模式）
+        // 则修正其内容去前缀，否则直接追加 AI 回复。
+        bool fixedLast = false;
+        if (history.Count > 0)
         {
-            ChatMessageContent lastMsg = chatHistoryAgentThread.ChatHistory[^1];
+            ChatMessageContent lastMsg = history[^1];
             if (lastMsg.Role == AuthorRole.Assistant && (lastMsg.Content?.Contains(ThinkContentPrefix) ?? false))
+            {
                 lastMsg.Content = aiMessage;
+                fixedLast = true;
+            }
         }
+        if (!fixedLast && !string.IsNullOrWhiteSpace(aiMessage))
+            history.AddAssistantMessage(aiMessage);
 
         return aiMessage;
     }

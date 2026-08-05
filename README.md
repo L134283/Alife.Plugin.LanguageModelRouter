@@ -63,4 +63,4 @@ AI 会调用 SwitchModelGroup 函数直接切换，无需手动操作 UI。
 
 ## 版本
 
-v4.0.0（适配 Alife 4.0.0+，依赖 Alife.Function.FunctionCaller）
+v4.0.1（适配 Alife 4.0.0+，依赖 Alife.Function.FunctionCaller）
