@@ -21,8 +21,8 @@ namespace Alife.Plugin.LanguageModelRouter;
 public class FallbackHandler : DelegatingHandler
 {
     readonly Func<List<FallbackGroup>> getGroups;
-    readonly List<string> errorKeywords;
-    readonly int retryDelayMs;
+    readonly Func<List<string>> getErrorKeywords;
+    readonly Func<int> getRetryDelayMs;
     readonly Func<int> getForcedGroupIndex;
     readonly Func<bool> getAutoFailoverEnabled;
     readonly Action<int>? onFailover;
@@ -40,8 +40,8 @@ public class FallbackHandler : DelegatingHandler
     public FallbackHandler(
         HttpMessageHandler innerHandler,
         Func<List<FallbackGroup>> getGroups,
-        List<string> errorKeywords,
-        int retryDelayMs,
+        Func<List<string>>? getErrorKeywords = null,
+        Func<int>? getRetryDelayMs = null,
         Func<int>? getForcedGroupIndex = null,
         Func<bool>? getAutoFailoverEnabled = null,
         Action<int>? onFailover = null,
@@ -50,8 +50,8 @@ public class FallbackHandler : DelegatingHandler
     ) : base(innerHandler)
     {
         this.getGroups = getGroups;
-        this.errorKeywords = errorKeywords;
-        this.retryDelayMs = retryDelayMs;
+        this.getErrorKeywords = getErrorKeywords ?? (() => new List<string>());
+        this.getRetryDelayMs = getRetryDelayMs ?? (() => 1000);
         this.getForcedGroupIndex = getForcedGroupIndex ?? (() => -1);
         this.getAutoFailoverEnabled = getAutoFailoverEnabled ?? (() => true);
         this.onFailover = onFailover;
@@ -71,6 +71,8 @@ public class FallbackHandler : DelegatingHandler
 
         int forcedIdx = getForcedGroupIndex();
         bool autoEnabled = getAutoFailoverEnabled();
+        var errorKeywords = getErrorKeywords();
+        int retryDelayMs = getRetryDelayMs();
 
         int startGroup = forcedIdx >= 0 && forcedIdx < groups.Count ? forcedIdx : 0;
         int maxAttempts = autoEnabled ? groups.Count : 1;
@@ -82,18 +84,16 @@ public class FallbackHandler : DelegatingHandler
             int groupIdx = (startGroup + attempt) % groups.Count;
             var group = groups[groupIdx];
 
-            HttpRequestMessage req;
-            if (groupIdx == 0)
+            // 每次请求都按当前组重写目标与模型，拖动排序后无需重建内核即生效
+            HttpRequestMessage req = await CloneRequestAsync(request);
+            req.RequestUri = BuildNewUri(request.RequestUri!, group.Endpoint.AbsoluteUri);
+            if (req.Headers.Authorization != null)
+                req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", group.ApiKey);
+            await RewriteRequestBody(req, group.ModelId, group.ReasoningEffort, group.ExtraBody);
+            if (group.ExtraHeaders != null)
             {
-                req = request;
-            }
-            else
-            {
-                req = await CloneRequestAsync(request);
-                req.RequestUri = BuildNewUri(request.RequestUri!, group.Endpoint.AbsoluteUri);
-                if (req.Headers.Authorization != null)
-                    req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", group.ApiKey);
-                await RewriteRequestBody(req, group.ModelId);
+                foreach (var header in group.ExtraHeaders)
+                    req.Headers.TryAddWithoutValidation(header.Key, header.Value);
             }
 
             if (attempt > 0 && retryDelayMs > 0)
@@ -133,7 +133,7 @@ public class FallbackHandler : DelegatingHandler
 
             if (!shouldFallback && errorKeywords.Count > 0)
             {
-                shouldFallback = await ContainsErrorKeywordsAsync(response, cancellationToken);
+                shouldFallback = await ContainsErrorKeywordsAsync(response, errorKeywords, cancellationToken);
             }
 
             if (!shouldFallback)
@@ -164,7 +164,7 @@ public class FallbackHandler : DelegatingHandler
         return code == 429 || code == 402 || code >= 500;
     }
 
-    async Task<bool> ContainsErrorKeywordsAsync(HttpResponseMessage response, CancellationToken ct)
+    static async Task<bool> ContainsErrorKeywordsAsync(HttpResponseMessage response, List<string> errorKeywords, CancellationToken ct)
     {
         try
         {
@@ -210,15 +210,41 @@ public class FallbackHandler : DelegatingHandler
         return clone;
     }
 
-    static async Task RewriteRequestBody(HttpRequestMessage req, string newModelId)
+    static async Task RewriteRequestBody(HttpRequestMessage req, string newModelId, string? reasoningEffort = null, IReadOnlyDictionary<string, object?>? extraBody = null)
     {
         if (req.Content == null) return;
-        byte[] body = await req.Content.ReadAsByteArrayAsync();
-        JObject obj = JObject.Parse(Encoding.UTF8.GetString(body));
-        obj["model"] = newModelId;
-        byte[] newBody = Encoding.UTF8.GetBytes(obj.ToString(Newtonsoft.Json.Formatting.None));
-        req.Content = new ByteArrayContent(newBody);
-        req.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+        try
+        {
+            byte[] body = await req.Content.ReadAsByteArrayAsync();
+            JObject obj = JObject.Parse(Encoding.UTF8.GetString(body));
+            obj["model"] = newModelId;
+            if (string.IsNullOrWhiteSpace(reasoningEffort))
+                obj.Remove("reasoning_effort");
+            else
+                obj["reasoning_effort"] = reasoningEffort;
+            if (extraBody != null)
+            {
+                foreach (var kvp in extraBody)
+                {
+                    // ParseExtraBody 对嵌套对象/数组返回 System.Text.Json.JsonElement，
+                    // 必须用 GetRawText 重新解析，否则 JToken.FromObject(JsonElement) 会损坏结构
+                    // （如 thinking 嵌套对象丢失字段导致上游 400 "missing field type"）
+                    if (kvp.Value is System.Text.Json.JsonElement el)
+                        obj[kvp.Key] = JToken.Parse(el.GetRawText());
+                    else if (kvp.Value == null)
+                        obj[kvp.Key] = JValue.CreateNull();
+                    else
+                        obj[kvp.Key] = JToken.FromObject(kvp.Value);
+                }
+            }
+            byte[] newBody = Encoding.UTF8.GetBytes(obj.ToString(Newtonsoft.Json.Formatting.None));
+            req.Content = new ByteArrayContent(newBody);
+            req.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[灵枢] 请求体重写失败（按原请求发送）: {ex.Message}");
+        }
     }
 
     /// <summary>
@@ -230,7 +256,9 @@ public class FallbackHandler : DelegatingHandler
             return new Uri(newEndpoint);
 
         string basePath = endpointUri.AbsolutePath.TrimEnd('/');
-        string path = basePath + "/chat/completions";
+        string path = basePath.EndsWith("/chat/completions", StringComparison.OrdinalIgnoreCase)
+            ? basePath
+            : basePath + "/chat/completions";
         string query = originalUri.Query;
 
         var builder = new UriBuilder(endpointUri)
@@ -298,7 +326,10 @@ public class FallbackHandler : DelegatingHandler
             try
             {
                 JObject obj = JObject.Parse(jsonPart);
-                JToken? delta = obj["choices"]?[0]?["delta"];
+                // choices 可能为空数组（完成帧/异常帧），直接索引 [0] 会越界
+                JToken? delta = null;
+                if (obj["choices"] is JArray jChoices && jChoices.Count > 0)
+                    delta = jChoices[0]?["delta"];
                 if (delta is JObject deltaObj)
                 {
                     bool showThinking = getShowThinkingChain();
@@ -316,7 +347,7 @@ public class FallbackHandler : DelegatingHandler
                                     bool hasContent = curContent != null && curContent.Type != JTokenType.Null
                                         && !string.IsNullOrEmpty(curContent.ToString());
                                     if (!hasContent)
-                                        deltaObj["content"] = $"{ChatBot.ThinkContentPrefix}{val}";
+                                        deltaObj["content"] = $"{LanguageModelRouter.ThinkContentPrefix}{val}";
                                 }
                                 deltaObj.Remove(key);
                                 break;
@@ -356,4 +387,4 @@ public class FallbackHandler : DelegatingHandler
     }
 }
 
-public record FallbackGroup(Uri Endpoint, string ModelId, string ApiKey);
+public record FallbackGroup(int Slot, Uri Endpoint, string ModelId, string ApiKey, IReadOnlyDictionary<string, string>? ExtraHeaders = null, string? ReasoningEffort = null, IReadOnlyDictionary<string, object?>? ExtraBody = null);

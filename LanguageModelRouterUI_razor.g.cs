@@ -3,16 +3,21 @@ using System.Collections.Generic;
 using System.Threading.Tasks;
 using Alife.Framework;
 using Microsoft.AspNetCore.Components;
+using Microsoft.AspNetCore.Components.Web;
 using Microsoft.AspNetCore.Components.Rendering;
 using AntDesign;
 
 namespace Alife.Plugin.LanguageModelRouter;
 
-public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, LanguageModelRouterConfig>
+public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, LanguageModelRouterConfig>, IDisposable
 {
-    string?[] _detectResults = new string?[4];
-    List<string>?[] _detectedModels = new List<string>?[4];
+    string?[] _detectResults = Array.Empty<string?>();
+    List<string>?[] _detectedModels = Array.Empty<List<string>?>();
     int _seq;
+    int? _dragSource;
+
+    // 订阅标记，Dispose 时退订静态事件，避免累积订阅（内存泄漏 + 重复刷新）
+    bool _subscribed;
 
     const string Css = @"
 .ls-container {
@@ -763,6 +768,47 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
   opacity: 0.7;
   color: var(--ls-text-dim);
 }
+.ls-add-row {
+  margin-top: 14px;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.ls-btn-add {
+  padding: 8px 18px;
+  border-radius: 9px;
+  border: 1px dashed rgba(168,212,122,0.5);
+  background: rgba(40,54,26,0.35);
+  color: var(--ls-ok);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  font-family: inherit;
+  transition: all 0.25s ease;
+}
+.ls-btn-add:hover:not(:disabled) {
+  border-color: var(--ls-ok);
+  box-shadow: 0 0 16px rgba(168,212,122,0.3);
+  transform: translateY(-1px);
+}
+.ls-btn-add:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.ls-btn-remove {
+  border-radius: 7px;
+  border: 1px solid rgba(239,122,104,0.4);
+  background: rgba(90,30,24,0.4);
+  color: var(--ls-danger);
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.25s ease;
+}
+.ls-btn-remove:hover {
+  border-color: var(--ls-danger);
+  box-shadow: 0 0 12px rgba(239,122,104,0.35);
+}
 .ls-btn-probe {
   display: inline-flex;
   align-items: center;
@@ -1001,12 +1047,90 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
   background: transparent !important;
   color: var(--ls-text) !important;
 }
+.ls-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.ls-group-card {
+  border: 1px solid var(--ls-border-soft);
+  border-radius: 12px;
+  padding: 12px 14px 14px;
+  background: linear-gradient(180deg, rgba(232,198,90,0.06), rgba(0,0,0,0.18));
+  box-shadow: 0 2px 12px rgba(0,0,0,0.25);
+  transition: border-color .2s, box-shadow .2s, opacity .2s;
+}
+.ls-group-card:hover {
+  border-color: var(--ls-border);
+}
+.ls-group-card[draggable=""true""] {
+  cursor: grab;
+}
+.ls-group-card[draggable=""true""]:active {
+  cursor: grabbing;
+}
+.ls-group-card-dragging {
+  opacity: 0.45;
+  border-color: var(--ls-gold-dim);
+  box-shadow: 0 0 0 1px var(--ls-gold-dim), 0 0 24px rgba(232,198,90,0.22);
+}
+.ls-group-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.ls-drag-handle {
+  color: var(--ls-gold);
+  font-size: 15px;
+  line-height: 1;
+  cursor: grab;
+  user-select: none;
+  opacity: 0.85;
+  transition: opacity .2s, transform .2s;
+}
+.ls-group-card:hover .ls-drag-handle {
+  opacity: 1;
+  transform: translateX(1px);
+}
+.ls-group-card-title {
+  flex: 1;
+  font-weight: 600;
+  font-size: 13.5px;
+  color: var(--ls-text);
+  letter-spacing: 0.5px;
+}
+.ls-badge-main {
+  background: linear-gradient(135deg, rgba(232,198,90,0.32), rgba(232,198,90,0.12));
+  border-color: var(--ls-gold-dim);
+  color: var(--ls-gold-bright);
+  text-shadow: 0 0 10px rgba(255,240,176,0.5);
+  box-shadow: 0 0 14px rgba(232,198,90,0.25);
+}
+
 ";
 
 
     protected override void OnInitialized()
     {
-        LanguageModelRouter.OnGroupChanged += () => InvokeAsync(StateHasChanged);
+        if (!_subscribed)
+        {
+            LanguageModelRouter.OnGroupChanged += OnGroupChangedHandler;
+            _subscribed = true;
+        }
+    }
+
+    void OnGroupChangedHandler() => InvokeAsync(StateHasChanged);
+
+    // ModuleUIBase 未暴露 Dispose(bool)，改用显式 IDisposable 实现退订静态事件。
+    // Blazor 渲染器释放组件时会检测 IDisposable 并调用（接口重新实现，基类是否实现该接口均可）。
+    void IDisposable.Dispose()
+    {
+        if (_subscribed)
+        {
+            LanguageModelRouter.OnGroupChanged -= OnGroupChangedHandler;
+            _subscribed = false;
+        }
     }
 
     protected override void BuildRenderTree(RenderTreeBuilder b)
@@ -1112,7 +1236,7 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
         // 特性条（装饰，非业务文案）
         b.OpenElement(_seq++, "div");
         b.AddAttribute(_seq++, "class", "ls-feature-strip");
-        FeatureChip(b, "四路圣渠");
+        FeatureChip(b, "多路圣渠");
         FeatureChip(b, "自动容灾");
         FeatureChip(b, "思维链");
         FeatureChip(b, "一语切换");
@@ -1140,7 +1264,7 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
 
         b.OpenElement(_seq++, "div");
         b.AddAttribute(_seq++, "class", "ls-alert-body");
-        AlertLine(b, "✧", "替换框架内置的 OpenAILanguageModel，实现多路文本模型自动容灾切换", false);
+        AlertLine(b, "✧", "替换框架内置 OpenAI 语言模型，支持多路文本模型自动容灾切换、拖动排序与自由增删渠道组", false);
         AlertLine(b, "✧", "遇到 HTTP 429/402/5xx 错误或响应体包含指定关键字时，自动切换到下一组渠道重试", false);
         AlertLine(b, "✧", "同时支持 reasoning_content 等 SSE 思维链流的自动转换", false);
         AlertLine(b, "◈", "使用前请在角色配置中禁用 OpenAILanguageModel，启用本模块", true);
@@ -1148,22 +1272,41 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
 
         b.CloseElement();
 
-        // === 第1组 ===
-        GroupConfig(b, 0, true);
+        // === 渠道组（可增删，拖动排序，最上方为主组）===
+        b.OpenElement(_seq++, "div");
+        b.AddAttribute(_seq++, "class", "ls-groups");
+        AddHint(b, "拖动卡片调整渠道顺序：拖到最上方的组即为主渠道（优先使用），容灾按从上到下的顺序依次尝试。可点击「添加渠道」新增组、展开卡片后删除组。");
+        Configuration.EnsureGroups();
+        EnsureDetectArrays();
+        int[] order = LanguageModelRouter.GetGroupOrder(Configuration);
+        for (int di = 0; di < order.Length; di++)
+            GroupCard(b, di);
+
+        // 添加渠道组
+        b.OpenElement(_seq++, "div");
+        b.AddAttribute(_seq++, "class", "ls-add-row");
+        var canAdd = Configuration.Groups.Count < LanguageModelRouterConfig.MaxGroups;
+        b.OpenElement(_seq++, "button");
+        b.AddAttribute(_seq++, "type", "button");
+        b.AddAttribute(_seq++, "class", "ls-btn-add");
+        if (!canAdd)
+            b.AddAttribute(_seq++, "disabled", true);
+        b.AddAttribute(_seq++, "onclick", EventCallback.Factory.Create(this, () =>
+        {
+            Configuration.AddGroup();
+            EnsureDetectArrays();
+            StateHasChanged();
+        }));
+        b.AddContent(_seq++, canAdd
+            ? $"+ 添加渠道组（当前 {Configuration.Groups.Count}/{LanguageModelRouterConfig.MaxGroups}）"
+            : $"已达上限 {LanguageModelRouterConfig.MaxGroups} 组");
+        b.CloseElement();
+        b.CloseElement();
+        b.CloseElement();
 
         // 圣印分隔
         SealDivider(b);
 
-        // === 第2组 ===
-        AddCollapsibleGroup(b, "备用渠道 1（第2组）", () => GroupConfig(b, 1, false));
-
-        // === 第3组 ===
-        AddCollapsibleGroup(b, "备用渠道 2（第3组）", () => GroupConfig(b, 2, false));
-
-        // === 第4组 ===
-        AddCollapsibleGroup(b, "备用渠道 3（第4组）", () => GroupConfig(b, 3, false));
-
-        SealDivider(b);
 
         // === 容灾设置 ===
         b.OpenElement(_seq++, "div");
@@ -1202,14 +1345,17 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
         b.AddAttribute(_seq++, "class", "ls-btn-row");
 
         int forcedIdx = Configuration.ForcedGroupIndex;
-        for (int g = 0; g < 4; g++)
+        for (int di = 0; di < order.Length; di++)
         {
-            int group = g;
-            string name = LanguageModelRouter.GetGroupName(g, Configuration);
-            string btnLabel = string.IsNullOrWhiteSpace(name) ? $"第{group + 1}组" : $"第{group + 1}组({name})";
+            int group = order[di];
+            string name = LanguageModelRouter.GetGroupName(group, Configuration);
+            string mainMark = di == 0 ? " ★主" : "";
+            string btnLabel = string.IsNullOrWhiteSpace(name) ? $"第{group + 1}组{mainMark}" : $"第{group + 1}组({name}){mainMark}";
             bool configured = IsGroupConfigured(group);
             AddSwitchBtn(b, btnLabel, forcedIdx == group, configured, () => SwitchTo(group));
         }
+        // 返回自动容灾
+        AddSwitchBtn(b, "自动容灾", forcedIdx < 0, true, () => SwitchTo(-1));
 
         b.CloseElement();
         AddHint(b, "点击按钮切换渠道，也可在聊天中告诉桌宠「切换到第二组」或按名称「切换到 deepseek」，AI 会自动切换。配置保存后即刻生效，无需重新加载模块。");
@@ -1219,7 +1365,7 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
         b.OpenElement(_seq++, "div");
         b.AddAttribute(_seq++, "class", "ls-section");
         SectionTitle(b, "使用说明");
-        AddHint(b, "1. 在角色配置中禁用「OpenAI语言模型」，启用「灵枢 - OpenAI语言模型报错自动切换」\n2. 第1组为主渠道，必须填写 Endpoint、Model ID 和 API Key\n3. 第2~4组为备用渠道，遇到 429/402/5xx 错误时自动切换\n4. 组名称可用于 AI 识别渠道，如对桌宠说「切换到 deepseek」即可对应切换\n5. 配置保存后即刻生效，无需重新加载模块");
+        AddHint(b, "1. 在角色配置中禁用「OpenAI语言模型」，启用「灵枢 - OpenAI语言模型报错自动切换」\n2. 拖动渠道卡片可调整顺序：拖到最上方的组即为主渠道，必须填写 Endpoint、Model ID 和 API Key\n3. 其余组为备用渠道，遇到 429/402/5xx 错误时按从上到下顺序自动切换\n4. 组名称可用于 AI 识别渠道，如对桌宠说「切换到 deepseek」即可对应切换\n5. 可点击「添加渠道组」自由新增，展开备用组卡片后点「删除」移除（主组不可删，至少保留 1 组）\n6. 配置保存后即刻生效，无需重新加载模块");
         b.CloseElement();
     }
 
@@ -1257,206 +1403,185 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
         b.CloseElement();
     }
 
+    /// <summary>确保探测结果数组与当前组数对齐（增删组后调用）</summary>
+    void EnsureDetectArrays()
+    {
+        int n = Configuration!.Groups.Count;
+        if (_detectResults.Length != n)
+        {
+            var dr = new string?[n];
+            var dm = new List<string>?[n];
+            int copy = Math.Min(n, _detectResults.Length);
+            Array.Copy(_detectResults, dr, copy);
+            Array.Copy(_detectedModels, dm, copy);
+            _detectResults = dr;
+            _detectedModels = dm;
+        }
+    }
+
     bool IsGroupConfigured(int g)
     {
         var cfg = Configuration!;
-        return g switch
-        {
-            0 => !string.IsNullOrWhiteSpace(cfg.Endpoint1) && !string.IsNullOrWhiteSpace(cfg.ApiKey1),
-            1 => !string.IsNullOrWhiteSpace(cfg.Endpoint2) && !string.IsNullOrWhiteSpace(cfg.ApiKey2),
-            2 => !string.IsNullOrWhiteSpace(cfg.Endpoint3) && !string.IsNullOrWhiteSpace(cfg.ApiKey3),
-            3 => !string.IsNullOrWhiteSpace(cfg.Endpoint4) && !string.IsNullOrWhiteSpace(cfg.ApiKey4),
-            _ => false
-        };
+        cfg.EnsureGroups();
+        if (g < 0 || g >= cfg.Groups.Count) return false;
+        return cfg.Groups[g].IsConfigured;
     }
 
     // ==================== Group Config ====================
 
-    void GroupConfig(RenderTreeBuilder b, int g, bool isFirst)
+    void GroupConfig(RenderTreeBuilder b, int g, bool isPrimary)
     {
-        if (isFirst)
-        {
-            b.OpenElement(_seq++, "div");
-            b.AddAttribute(_seq++, "class", "ls-section");
-            SectionTitle(b, "主渠道（第1组，必填）");
-
-            b.OpenElement(_seq++, "div");
-            b.AddAttribute(_seq++, "class", "ls-status-row");
-            b.OpenElement(_seq++, "span");
-            b.AddAttribute(_seq++, "class", IsGroupConfigured(0) ? "ls-badge ls-badge-on" : "ls-badge ls-badge-off");
-            b.AddContent(_seq++, IsGroupConfigured(0) ? "✦ 已配置" : "○ 未配置");
-            b.CloseElement();
-            if (Configuration.ForcedGroupIndex == 0 || Configuration.ForcedGroupIndex < 0)
-            {
-                b.OpenElement(_seq++, "span");
-                b.AddAttribute(_seq++, "class", "ls-badge ls-badge-active");
-                b.AddContent(_seq++, "当前通道");
-                b.CloseElement();
-            }
-            b.CloseElement();
-        }
-
         var cfg = Configuration!;
+        cfg.EnsureGroups();
+        if (g < 0 || g >= cfg.Groups.Count) return;
+        var ch = cfg.Groups[g];
 
-        string groupName = g switch
-        {
-            0 => cfg.GroupName1 ?? "",
-            1 => cfg.GroupName2 ?? "",
-            2 => cfg.GroupName3 ?? "",
-            3 => cfg.GroupName4 ?? "",
-            _ => ""
-        };
-        string endpoint = g switch
-        {
-            0 => cfg.Endpoint1,
-            1 => cfg.Endpoint2 ?? "",
-            2 => cfg.Endpoint3 ?? "",
-            3 => cfg.Endpoint4 ?? "",
-            _ => ""
-        };
-        string modelId = g switch
-        {
-            0 => cfg.ModelId1,
-            1 => cfg.ModelId2 ?? "",
-            2 => cfg.ModelId3 ?? "",
-            3 => cfg.ModelId4 ?? "",
-            _ => ""
-        };
-        string apiKey = g switch
-        {
-            0 => cfg.ApiKey1,
-            1 => cfg.ApiKey2 ?? "",
-            2 => cfg.ApiKey3 ?? "",
-            3 => cfg.ApiKey4 ?? "",
-            _ => ""
-        };
-        string reasoning = g switch
-        {
-            0 => cfg.ReasoningEffort1 ?? "",
-            1 => cfg.ReasoningEffort2 ?? "",
-            2 => cfg.ReasoningEffort3 ?? "",
-            3 => cfg.ReasoningEffort4 ?? "",
-            _ => ""
-        };
-        string extraH = g switch
-        {
-            0 => cfg.ExtraHeaders1 ?? "",
-            1 => cfg.ExtraHeaders2 ?? "",
-            2 => cfg.ExtraHeaders3 ?? "",
-            3 => cfg.ExtraHeaders4 ?? "",
-            _ => ""
-        };
-        string extraB = g switch
-        {
-            0 => cfg.ExtraBody1 ?? "",
-            1 => cfg.ExtraBody2 ?? "",
-            2 => cfg.ExtraBody3 ?? "",
-            3 => cfg.ExtraBody4 ?? "",
-            _ => ""
-        };
+        b.OpenElement(_seq++, "div");
+        b.AddAttribute(_seq++, "class", "ls-section");
+        SectionTitle(b, isPrimary ? $"主渠道（第{g + 1}组，必填）" : $"第{g + 1}组配置");
 
-        if (!isFirst)
-        {
-            b.OpenElement(_seq++, "div");
-            b.AddAttribute(_seq++, "class", "ls-status-row");
-            b.OpenElement(_seq++, "span");
-            b.AddAttribute(_seq++, "class", IsGroupConfigured(g) ? "ls-badge ls-badge-on" : "ls-badge ls-badge-off");
-            b.AddContent(_seq++, IsGroupConfigured(g) ? "✦ 已配置" : "○ 未配置");
-            b.CloseElement();
-            if (Configuration.ForcedGroupIndex == g)
-            {
-                b.OpenElement(_seq++, "span");
-                b.AddAttribute(_seq++, "class", "ls-badge ls-badge-active");
-                b.AddContent(_seq++, "当前通道");
-                b.CloseElement();
-            }
-            b.CloseElement();
-        }
+        b.OpenElement(_seq++, "div");
+        b.AddAttribute(_seq++, "class", "ls-status-row");
+        b.OpenElement(_seq++, "span");
+        b.AddAttribute(_seq++, "class", IsGroupConfigured(g) ? "ls-badge ls-badge-on" : "ls-badge ls-badge-off");
+        b.AddContent(_seq++, IsGroupConfigured(g) ? "✦ 已配置" : "○ 未配置");
+        b.CloseElement();
+        b.CloseElement();
 
-        AddInput(b, "组名称（可选，供 AI 识别）", groupName, v => SetGroupName(g, v));
-        AddInput(b, "Endpoint", endpoint, v => SetGroupEndpoint(g, v));
+        AddInput(b, "组名称（可选，供 AI 识别）", ch.GroupName ?? "", v => ch.GroupName = v);
+        AddInput(b, "Endpoint", ch.Endpoint ?? "", v => ch.Endpoint = v);
         AddHint(b, "API 端点 URL，如 https://api.openai.com/v1");
-        AddInput(b, "Model ID", modelId, v => SetGroupModelId(g, v));
+        AddInput(b, "Model ID", ch.ModelId ?? "", v => ch.ModelId = v);
         AddHint(b, "模型标识，如 gpt-4o、deepseek-chat");
 
         ProbeSection(b, g);
 
-        AddPassword(b, "API Key", apiKey, v => SetGroupApiKey(g, v));
+        AddPassword(b, "API Key", ch.ApiKey ?? "", v => ch.ApiKey = v);
 
-        AddInput(b, "Reasoning Effort", reasoning, v => SetGroupReasoning(g, v));
+        AddInput(b, "Reasoning Effort", ch.ReasoningEffort ?? "", v => ch.ReasoningEffort = string.IsNullOrWhiteSpace(v) ? null : v);
         AddHint(b, "推理强度，如 low / medium / high，留空则不设置");
-        AddInput(b, "Extra Headers (JSON)", extraH, v => SetGroupExtraHeaders(g, v));
+        AddInput(b, "Extra Headers (JSON)", ch.ExtraHeaders ?? "", v => ch.ExtraHeaders = string.IsNullOrWhiteSpace(v) ? null : v);
         AddHint(b, "额外请求头，JSON 格式，如 {\"X-Custom\":\"value\"}");
-        AddInput(b, "Extra Body (JSON)", extraB, v => SetGroupExtraBody(g, v));
+        AddInput(b, "Extra Body (JSON)", ch.ExtraBody ?? "", v => ch.ExtraBody = string.IsNullOrWhiteSpace(v) ? null : v);
         AddHint(b, "额外请求体，JSON 格式，如 {\"temperature\":0.7}");
 
-        if (isFirst)
+        b.CloseElement();
+    }
+
+    // ==================== 拖动排序 ====================
+
+    /// <summary>渲染一张可拖动的渠道组卡片（displayIndex 为显示位置，0 = 主组）。主组与备用组均可折叠。</summary>
+    void GroupCard(RenderTreeBuilder b, int displayIndex)
+    {
+        int slot = GetDisplaySlot(displayIndex);
+        bool isPrimary = displayIndex == 0;
+        bool isCurrent = IsCurrentSlot(slot);
+
+        b.OpenElement(_seq++, "div");
+        b.AddAttribute(_seq++, "class", _dragSource == displayIndex ? "ls-group-card ls-group-card-dragging" : "ls-group-card");
+        b.AddAttribute(_seq++, "draggable", "true");
+        b.AddAttribute(_seq++, "ondragstart", EventCallback.Factory.Create<DragEventArgs>(this, e => _dragSource = displayIndex));
+        b.AddAttribute(_seq++, "ondragend", EventCallback.Factory.Create<DragEventArgs>(this, e => { _dragSource = null; StateHasChanged(); }));
+        b.AddAttribute(_seq++, "ondragover", EventCallback.Factory.Create<DragEventArgs>(this, e => { }));
+        b.AddEventPreventDefaultAttribute(_seq++, "ondragover", true);
+        b.AddAttribute(_seq++, "ondrop", EventCallback.Factory.Create<DragEventArgs>(this, e => DropGroup(displayIndex)));
+        b.AddEventPreventDefaultAttribute(_seq++, "ondrop", true);
+
+        // 卡片头：拖拽手柄 + 标题 + 徽标 + 删除按钮
+        b.OpenElement(_seq++, "div");
+        b.AddAttribute(_seq++, "class", "ls-group-card-head");
+
+        b.OpenElement(_seq++, "span");
+        b.AddAttribute(_seq++, "class", "ls-drag-handle");
+        b.AddContent(_seq++, "⠿");
+        b.CloseElement();
+
+        b.OpenElement(_seq++, "span");
+        b.AddAttribute(_seq++, "class", "ls-group-card-title");
+        b.AddContent(_seq++, GetGroupCardTitle(slot));
+        b.CloseElement();
+
+        if (isPrimary)
+        {
+            b.OpenElement(_seq++, "span");
+            b.AddAttribute(_seq++, "class", "ls-badge ls-badge-main");
+            b.AddContent(_seq++, "★ 主组");
             b.CloseElement();
+        }
+        if (isCurrent)
+        {
+            b.OpenElement(_seq++, "span");
+            b.AddAttribute(_seq++, "class", "ls-badge ls-badge-active");
+            b.AddContent(_seq++, "当前通道");
+            b.CloseElement();
+        }
+        b.CloseElement();
+
+        // 卡片内容：主组与备用组均使用可折叠卡片（主组默认展开，备用组可删除）
+        AddCollapsibleGroup(b, isPrimary ? $"主渠道（第{slot + 1}组，必填）" : "展开配置", isPrimary, () => GroupConfig(b, slot, isPrimary), canRemove: !isPrimary, onRemove: () =>
+        {
+            Configuration!.RemoveGroup(slot);
+            EnsureDetectArrays();
+            StateHasChanged();
+        });
+
+        b.CloseElement();
     }
 
-    void SetGroupName(int g, string v)
+    /// <summary>拖放：交换两组的显示顺序（拖到最上方即成为主组），同时修正强制锁定索引</summary>
+    void DropGroup(int targetDisplayIndex)
     {
-        if (g == 0) Configuration!.GroupName1 = string.IsNullOrWhiteSpace(v) ? null : v;
-        else if (g == 1) Configuration!.GroupName2 = string.IsNullOrWhiteSpace(v) ? null : v;
-        else if (g == 2) Configuration!.GroupName3 = string.IsNullOrWhiteSpace(v) ? null : v;
-        else if (g == 3) Configuration!.GroupName4 = string.IsNullOrWhiteSpace(v) ? null : v;
+        if (_dragSource == null || _dragSource.Value == targetDisplayIndex)
+        {
+            _dragSource = null;
+            return;
+        }
+
+        var groups = Configuration!.Groups;
+        int src = _dragSource.Value;
+        (groups[src], groups[targetDisplayIndex]) = (groups[targetDisplayIndex], groups[src]);
+
+        // 拖动排序后强制锁定跟随原组移动
+        int forced = Configuration.ForcedGroupIndex;
+        if (forced == src)
+            Configuration.ForcedGroupIndex = targetDisplayIndex;
+        else if (forced == targetDisplayIndex)
+            Configuration.ForcedGroupIndex = src;
+
+        _dragSource = null;
+        EnsureDetectArrays();
+        StateHasChanged();
     }
 
-    void SetGroupEndpoint(int g, string v)
+    /// <summary>显示位置 → Groups 索引（显示位置即索引，列表顺序即顺序）</summary>
+    int GetDisplaySlot(int displayIndex)
     {
-        if (g == 0) Configuration!.Endpoint1 = v;
-        else if (g == 1) Configuration!.Endpoint2 = string.IsNullOrWhiteSpace(v) ? null : v;
-        else if (g == 2) Configuration!.Endpoint3 = string.IsNullOrWhiteSpace(v) ? null : v;
-        else if (g == 3) Configuration!.Endpoint4 = string.IsNullOrWhiteSpace(v) ? null : v;
+        var order = LanguageModelRouter.GetGroupOrder(Configuration);
+        if (displayIndex < 0 || displayIndex >= order.Length) return displayIndex;
+        return order[displayIndex];
     }
 
-    void SetGroupModelId(int g, string v)
+    /// <summary>卡片标题：第 N 组（名称）</summary>
+    string GetGroupCardTitle(int slot)
     {
-        if (g == 0) Configuration!.ModelId1 = v;
-        else if (g == 1) Configuration!.ModelId2 = string.IsNullOrWhiteSpace(v) ? null : v;
-        else if (g == 2) Configuration!.ModelId3 = string.IsNullOrWhiteSpace(v) ? null : v;
-        else if (g == 3) Configuration!.ModelId4 = string.IsNullOrWhiteSpace(v) ? null : v;
+        string name = LanguageModelRouter.GetGroupName(slot, Configuration);
+        string baseTitle = $"第{slot + 1}组";
+        return string.IsNullOrWhiteSpace(name) ? baseTitle : $"{baseTitle}（{name}）";
     }
 
-    void SetGroupApiKey(int g, string v)
+    /// <summary>槽位是否为当前生效渠道（强制锁定优先，否则主组）</summary>
+    bool IsCurrentSlot(int slot)
     {
-        if (g == 0) Configuration!.ApiKey1 = v;
-        else if (g == 1) Configuration!.ApiKey2 = string.IsNullOrWhiteSpace(v) ? null : v;
-        else if (g == 2) Configuration!.ApiKey3 = string.IsNullOrWhiteSpace(v) ? null : v;
-        else if (g == 3) Configuration!.ApiKey4 = string.IsNullOrWhiteSpace(v) ? null : v;
-    }
-
-    void SetGroupReasoning(int g, string v)
-    {
-        string? val = string.IsNullOrWhiteSpace(v) ? null : v;
-        if (g == 0) Configuration!.ReasoningEffort1 = val;
-        else if (g == 1) Configuration!.ReasoningEffort2 = val;
-        else if (g == 2) Configuration!.ReasoningEffort3 = val;
-        else if (g == 3) Configuration!.ReasoningEffort4 = val;
-    }
-
-    void SetGroupExtraHeaders(int g, string v)
-    {
-        string? val = string.IsNullOrWhiteSpace(v) ? null : v;
-        if (g == 0) Configuration!.ExtraHeaders1 = val;
-        else if (g == 1) Configuration!.ExtraHeaders2 = val;
-        else if (g == 2) Configuration!.ExtraHeaders3 = val;
-        else if (g == 3) Configuration!.ExtraHeaders4 = val;
-    }
-
-    void SetGroupExtraBody(int g, string v)
-    {
-        string? val = string.IsNullOrWhiteSpace(v) ? null : v;
-        if (g == 0) Configuration!.ExtraBody1 = val;
-        else if (g == 1) Configuration!.ExtraBody2 = val;
-        else if (g == 2) Configuration!.ExtraBody3 = val;
-        else if (g == 3) Configuration!.ExtraBody4 = val;
+        var cfg = Configuration!;
+        if (cfg.ForcedGroupIndex >= 0) return cfg.ForcedGroupIndex == slot;
+        return LanguageModelRouter.GetPrimarySlot(cfg) == slot;
     }
 
     // ==================== Probe & Dropdown ====================
 
     void ProbeSection(RenderTreeBuilder b, int groupIndex)
     {
+        EnsureDetectArrays();
         b.OpenElement(_seq++, "div");
         b.AddAttribute(_seq++, "class", "ls-probe");
 
@@ -1498,22 +1623,20 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
             b.AddAttribute(_seq++, "class", "ls-select");
             b.AddAttribute(_seq++, "onchange", EventCallback.Factory.Create<ChangeEventArgs>(this, e =>
             {
-                if (e.Value is string val && !string.IsNullOrWhiteSpace(val))
+                if (e.Value is string val && !string.IsNullOrWhiteSpace(val)
+                    && groupIndex >= 0 && groupIndex < Configuration!.Groups.Count)
                 {
-                    SetGroupModelId(groupIndex, val);
+                    Configuration.Groups[groupIndex].ModelId = val;
                     StateHasChanged();
                 }
             }));
             b.OpenElement(_seq++, "option");
             b.AddAttribute(_seq++, "value", "");
-            string cur = groupIndex switch
-            {
-                0 => Configuration!.ModelId1,
-                1 => Configuration!.ModelId2,
-                2 => Configuration!.ModelId3,
-                _ => Configuration!.ModelId4,
-            };
-            b.AddContent(_seq++, $"— 当前: {cur ?? "未设置"} —");
+            Configuration!.EnsureGroups();
+            string cur = (groupIndex >= 0 && groupIndex < Configuration.Groups.Count)
+                ? Configuration.Groups[groupIndex].ModelId ?? ""
+                : "";
+            b.AddContent(_seq++, $"— 当前: {(string.IsNullOrWhiteSpace(cur) ? "未设置" : cur)} —");
             b.CloseElement();
             foreach (var m in models)
             {
@@ -1532,6 +1655,9 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
 
     async Task ProbeGroup(int groupIndex)
     {
+        EnsureDetectArrays();
+        if (groupIndex < 0 || groupIndex >= _detectResults.Length) return;
+
         _detectResults[groupIndex] = "探测中…";
         _detectedModels[groupIndex] = null;
         StateHasChanged();
@@ -1614,6 +1740,12 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
 
     void SwitchTo(int groupIndex)
     {
+        // -1 = 自动容灾；其他索引必须指向已配置组，否则不生效（避免 UI 显示锁定但实际走主组的假象）
+        if (groupIndex >= 0 && !IsGroupConfigured(groupIndex))
+        {
+            // 提示并保持现状
+            return;
+        }
         Configuration.ForcedGroupIndex = groupIndex;
         LanguageModelRouter.OnGroupChanged?.Invoke();
         StateHasChanged();
@@ -1636,9 +1768,12 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
     string GetActiveGroupLabel()
     {
         int idx = Configuration.ForcedGroupIndex;
-        if (idx < 0) return "自动容灾";
+        if (idx < 0) return "自动容灾（主组优先）";
+        if (idx >= Configuration.Groups.Count || !Configuration.Groups[idx].IsConfigured)
+            return "自动容灾（当前锁定组未配置）";
         return LanguageModelRouter.GetGroupLabel(idx, Configuration);
     }
+
 
     void SectionTitle(RenderTreeBuilder b, string text)
     {
@@ -1684,10 +1819,12 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
         b.CloseComponent();
     }
 
-    void AddCollapsibleGroup(RenderTreeBuilder b, string title, Action renderContent)
+    void AddCollapsibleGroup(RenderTreeBuilder b, string title, bool defaultOpen, Action renderContent, bool canRemove = false, Action? onRemove = null)
     {
         b.OpenElement(_seq++, "details");
         b.AddAttribute(_seq++, "class", "ls-details");
+        if (defaultOpen)
+            b.AddAttribute(_seq++, "open", true);
 
         b.OpenElement(_seq++, "summary");
         b.OpenElement(_seq++, "span");
@@ -1695,6 +1832,21 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
         b.AddContent(_seq++, "▶");
         b.CloseElement();
         b.AddContent(_seq++, " " + title);
+
+        if (canRemove && onRemove != null)
+        {
+            b.OpenElement(_seq++, "button");
+            b.AddAttribute(_seq++, "type", "button");
+            b.AddAttribute(_seq++, "class", "ls-btn-remove");
+            b.AddAttribute(_seq++, "style", "margin-left:8px; padding:1px 10px; font-size:11px;");
+            b.AddAttribute(_seq++, "onclick", EventCallback.Factory.Create(this, (MouseEventArgs e) =>
+            {
+                onRemove();
+            }));
+            b.AddContent(_seq++, "删除");
+            b.CloseElement();
+        }
+
         b.CloseElement();
 
         b.OpenElement(_seq++, "div");
