@@ -345,42 +345,62 @@ public class LanguageModelRouter(
                 string errMsg = errObj["message"]?.ToString() ?? errObj.ToString();
                 throw new InvalidOperationException($"渠道返回错误：{errMsg}");
             }
-            return;
+            // 无内容帧（如流式收尾的 usage 帧 choices 为空数组）不处理正文，但下方仍需解析 usage
+        }
+        else
+        {
+            // content 可能是字符串或数组（多模态）；非字符串时跳过，避免 GetValue<string> 抛异常
+            string? content = null;
+            if (message["content"] is JsonValue cv && cv.TryGetValue<string>(out string? cs))
+                content = cs;
+            if (!string.IsNullOrEmpty(content))
+            {
+                if (content.StartsWith(ThinkContentPrefix))
+                {
+                    string reasoningPart = content.Substring(ThinkContentPrefix.Length);
+                    if (reasoningPart.Length > 0)
+                        thinkReceived?.Invoke(reasoningPart);
+                }
+                else
+                {
+                    nonThinkingContent.Append(content);
+                    textReceived?.Invoke(content);
+                }
+            }
         }
 
-        // content 可能是字符串或数组（多模态）；非字符串时跳过，避免 GetValue<string> 抛异常
-        string? content = null;
-        if (message["content"] is JsonValue cv && cv.TryGetValue<string>(out string? cs))
-            content = cs;
-        if (!string.IsNullOrEmpty(content))
+        // Token 统计（stream_options.include_usage 时末帧携带 usage；usage 帧通常 choices 为空数组，
+        // 因此必须放在"无内容帧直接 return"的分支之外，否则永远解析不到）
+        if (node["usage"] is JsonObject usageObj)
         {
-            if (content.StartsWith(ThinkContentPrefix))
-            {
-                string reasoningPart = content.Substring(ThinkContentPrefix.Length);
-                if (reasoningPart.Length > 0)
-                    thinkReceived?.Invoke(reasoningPart);
-            }
-            else
-            {
-                nonThinkingContent.Append(content);
-                textReceived?.Invoke(content);
-            }
-        }
+            int input = TryGetUsageInt(usageObj, "prompt_tokens");
+            if (input == 0) input = TryGetUsageInt(usageObj, "input_tokens");
+            int output = TryGetUsageInt(usageObj, "completion_tokens");
+            if (output == 0) output = TryGetUsageInt(usageObj, "output_tokens");
+            int total = TryGetUsageInt(usageObj, "total_tokens");
+            if (total == 0) total = input + output;
 
-        // Token 统计（stream_options.include_usage 时末帧携带 usage）
-        JsonNode? usage = node["usage"];
-        if (usage is JsonObject usageObj)
-        {
             TokenUsage tokenUsage = new()
             {
-                Input = usageObj["prompt_tokens"]?.GetValue<int>() ?? 0,
-                Output = usageObj["completion_tokens"]?.GetValue<int>() ?? 0,
-                Total = usageObj["total_tokens"]?.GetValue<int>() ?? 0,
-                Cached = usageObj["prompt_tokens_details"]?["cached_tokens"]?.GetValue<int>() ?? 0
+                Input = input,
+                Output = output,
+                Total = total,
+                Cached = usageObj["prompt_tokens_details"] is JsonObject ptd ? TryGetUsageInt(ptd, "cached_tokens") : 0
             };
             if (tokenUsage.Total > 0 || tokenUsage.Input > 0 || tokenUsage.Output > 0)
                 tokenUsed?.Invoke(tokenUsage);
         }
+    }
+
+    /// <summary>从 JsonObject 读取整数：数值可能以 int/long 存储，统一兼容（取不到或解析失败返回 0）</summary>
+    static int TryGetUsageInt(JsonObject obj, string key)
+    {
+        if (obj[key] is JsonValue v)
+        {
+            if (v.TryGetValue<int>(out int i)) return i;
+            if (v.TryGetValue<long>(out long l)) return (int)l;
+        }
+        return 0;
     }
 
     /// <summary>主组索引（始终为 0，列表第一项即主组）</summary>
