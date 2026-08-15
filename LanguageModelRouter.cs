@@ -50,8 +50,18 @@ public class LanguageModelRouter(
     /// <summary>本模块注册的 XmlHandler（热重载销毁时必须注销，避免旧 handler 在表中累积导致函数被重复执行）</summary>
     XmlHandler? registeredHandler;
 
+    /// <summary>思考请求记事本：XmlFunctionCaller/QChat/音频监听等框架模块通过 ILanguageModel.GetThinkingRequester()
+    /// 在此租用/归还"需要思考"的标记。智能思考切换开启后，本模块据其 IsOccupied 决定走思考还是非思考模式。</summary>
+    readonly OccupationNotepad thinkingRequester = new();
+
     /// <summary>HTTP 管道（含容灾/推理转换/按组重写），首次对话前按需构建</summary>
     HttpClient? httpClient;
+
+    /// <summary>HttpClient 创建锁：并发聊天请求可能同时进入 EnsureHttpClient，避免重复构建管道</summary>
+    readonly object httpClientLock = new();
+
+    /// <summary>暴露思考请求记事本，供框架生态（XmlFunctionCaller 等）请求"本次应使用思考模式"</summary>
+    public OccupationNotepad GetThinkingRequester() => thinkingRequester;
 
     protected override async Task OnAwake()
     {
@@ -118,14 +128,18 @@ public class LanguageModelRouter(
     {
         if (httpClient != null) return;
 
-        var config = Configuration;
-        if (config == null) return;
+        lock (httpClientLock)
+        {
+            if (httpClient != null) return; // double-check：并发首个请求只允许一个线程构建
 
-        config.EnsureGroups();
+            var config = Configuration;
+            if (config == null) return;
 
-        var groups = BuildFallbackGroups(config);
-        if (groups.Count == 0)
-            throw new Exception("灵枢：未配置任何渠道组，请在插件配置中填写至少一组 Endpoint / API Key");
+            config.EnsureGroups();
+
+            var groups = BuildFallbackGroups(config);
+            if (groups.Count == 0)
+                throw new Exception("灵枢：未配置任何渠道组，请在插件配置中填写至少一组 Endpoint / API Key");
 
         // 错误关键字 / 重试间隔 / 组列表均通过动态委托每次请求读取，UI 修改即刻生效
         SocketsHttpHandler handler = new()
@@ -165,7 +179,8 @@ public class LanguageModelRouter(
                 TestForceFailover = false;
                 return true;
             },
-            getShowThinkingChain: () => Configuration!.ShowThinkingChain);
+            getShowThinkingChain: () => Configuration!.ShowThinkingChain,
+            getThinkingMode: () => ComputeThinkingMode(Configuration!));
 
         httpClient = new HttpClient(fallbackHandler)
         {
@@ -174,6 +189,20 @@ public class LanguageModelRouter(
         };
 
         Console.WriteLine($"[灵枢] 已就绪，主渠道：{GetGroupLabel(groups[0].Slot, config)}");
+        }
+    }
+
+    /// <summary>
+    /// 智能思考/非思考切换判断（对齐官方 OpenAILanguageModel 的
+    /// "defaultThinking || GetThinkingRequester().IsOccupied" 逻辑）：
+    /// - 开关关闭 → 恒思考（保持各组原配置的思考行为，与旧版一致）
+    /// - 开关开启 → 默认思考 or 有模块请求思考（如 AI 需调用工具/群消息/监听等）→ 思考；
+    ///   否则非思考（删去 thinking/reasoning_effort 参数，回复快、token 省）
+    /// </summary>
+    internal bool ComputeThinkingMode(LanguageModelRouterConfig cfg)
+    {
+        if (!cfg.SmartThinkingEnabled) return true;
+        return cfg.DefaultThinking || thinkingRequester.IsOccupied;
     }
 
     /// <summary>对话入口：组装 OpenAI 兼容请求体，经 FallbackHandler 管道发送，逐帧解析 SSE 输出（参考官方 OpenAIVisionModel 的裸 HttpClient 写法）</summary>
@@ -243,11 +272,13 @@ public class LanguageModelRouter(
             }
 
             // 正常走 SSE 流式解析；个别渠道忽略 stream 参数返回完整 JSON 时走兼容解析
+            // thinkingMode 用于解析阶段：非思考模式下若渠道仍返回 reasoning（无视 disabled），直接丢弃思维链
+            bool thinkingMode = ComputeThinkingMode(Configuration!);
             string? mediaType = response.Content.Headers.ContentType?.MediaType;
             if (string.Equals(mediaType, "text/event-stream", StringComparison.OrdinalIgnoreCase))
-                await ReadSseAsync(response, nonThinkingContent, textReceived, thinkReceived, tokenUsed, cancellationToken);
+                await ReadSseAsync(response, nonThinkingContent, textReceived, thinkReceived, tokenUsed, thinkingMode, cancellationToken);
             else
-                await ReadJsonAsync(response, nonThinkingContent, textReceived, thinkReceived, tokenUsed, cancellationToken);
+                await ReadJsonAsync(response, nonThinkingContent, textReceived, thinkReceived, tokenUsed, thinkingMode, cancellationToken);
         }
         catch (Exception e)
         {
@@ -285,9 +316,16 @@ public class LanguageModelRouter(
         Action<string>? textReceived,
         Action<string>? thinkReceived,
         Action<TokenUsage>? tokenUsed,
+        bool thinkingMode,
         CancellationToken cancellationToken)
     {
         using var reader = new StreamReader(await response.Content.ReadAsStreamAsync(cancellationToken), Encoding.UTF8);
+
+        // 流式过程中部分渠道（如硅基流动/中转渠道）会在多个 chunk 里重复携带 usage，
+        // 若每帧都立即上报，框架 ChatBot 会把所有 usage 累加，导致 token 数值虚高（日志中曾出现百万/千万级）。
+        // 因此这里只保留最后一次 usage（流结束帧通常为最终准确值），流结束后统一上报一次。
+        TokenUsage? lastUsage = null;
+
         while (true)
         {
             string? line = await reader.ReadLineAsync(cancellationToken);
@@ -301,8 +339,13 @@ public class LanguageModelRouter(
             try { node = JsonNode.Parse(payload); } catch { continue; }
             if (node == null) continue;
 
-            HandleChunk(node, nonThinkingContent, textReceived, thinkReceived, tokenUsed);
+            TokenUsage? usage = HandleChunk(node, nonThinkingContent, textReceived, thinkReceived, thinkingMode);
+            if (usage != null)
+                lastUsage = usage;
         }
+
+        if (lastUsage != null)
+            tokenUsed?.Invoke(lastUsage.Value);
     }
 
     /// <summary>个别渠道忽略 stream 参数时返回完整 JSON，做兼容解析</summary>
@@ -312,6 +355,7 @@ public class LanguageModelRouter(
         Action<string>? textReceived,
         Action<string>? thinkReceived,
         Action<TokenUsage>? tokenUsed,
+        bool thinkingMode,
         CancellationToken cancellationToken)
     {
         string body = await response.Content.ReadAsStringAsync(cancellationToken);
@@ -319,16 +363,22 @@ public class LanguageModelRouter(
         try { node = JsonNode.Parse(body); } catch { node = null; }
         if (node == null) return;
 
-        HandleChunk(node, nonThinkingContent, textReceived, thinkReceived, tokenUsed, isJsonResponse: true);
+        TokenUsage? usage = HandleChunk(node, nonThinkingContent, textReceived, thinkReceived, thinkingMode, isJsonResponse: true);
+        if (usage != null)
+            tokenUsed?.Invoke(usage.Value);
     }
 
-    /// <summary>解析单个数据块：content / reasoning（带前缀）/ usage</summary>
-    static void HandleChunk(
+    /// <summary>
+    /// 解析单个数据块：content / reasoning（带前缀）/ usage。
+    /// 返回本块解析到的用量统计（无则 null）。调用方应只取最后一次非空结果上报，
+    /// 避免部分渠道在流式过程中多次携带 usage 导致框架对 TokenUsage 重复累加、数值虚高。
+    /// </summary>
+    static TokenUsage? HandleChunk(
         JsonNode node,
         StringBuilder nonThinkingContent,
         Action<string>? textReceived,
         Action<string>? thinkReceived,
-        Action<TokenUsage>? tokenUsed,
+        bool thinkingMode = true,
         bool isJsonResponse = false)
     {
         // 非流式响应内容在 choices[0].message.content，流式在 choices[0].delta.content
@@ -357,9 +407,14 @@ public class LanguageModelRouter(
             {
                 if (content.StartsWith(ThinkContentPrefix))
                 {
-                    string reasoningPart = content.Substring(ThinkContentPrefix.Length);
-                    if (reasoningPart.Length > 0)
-                        thinkReceived?.Invoke(reasoningPart);
+                    // 非思考模式下即使渠道仍返回 reasoning（无视 disabled 的个别渠道），也直接丢弃，
+                    // 保证"非思考"体验彻底无思维链
+                    if (thinkingMode)
+                    {
+                        string reasoningPart = content.Substring(ThinkContentPrefix.Length);
+                        if (reasoningPart.Length > 0)
+                            thinkReceived?.Invoke(reasoningPart);
+                    }
                 }
                 else
                 {
@@ -380,25 +435,31 @@ public class LanguageModelRouter(
             int total = TryGetUsageInt(usageObj, "total_tokens");
             if (total == 0) total = input + output;
 
+            // Cached 统计兼容两种字段变体：prompt_tokens_details.cached_tokens（OpenAI 标准）与 prompt_cache_hit_tokens（部分中转渠道）
+            int cached = usageObj["prompt_tokens_details"] is JsonObject ptd ? TryGetUsageInt(ptd, "cached_tokens") : 0;
+            if (cached == 0) cached = TryGetUsageInt(usageObj, "prompt_cache_hit_tokens");
+
             TokenUsage tokenUsage = new()
             {
                 Input = input,
                 Output = output,
                 Total = total,
-                Cached = usageObj["prompt_tokens_details"] is JsonObject ptd ? TryGetUsageInt(ptd, "cached_tokens") : 0
+                Cached = cached
             };
             if (tokenUsage.Total > 0 || tokenUsage.Input > 0 || tokenUsage.Output > 0)
-                tokenUsed?.Invoke(tokenUsage);
+                return tokenUsage;
         }
+        return null;
     }
 
-    /// <summary>从 JsonObject 读取整数：数值可能以 int/long 存储，统一兼容（取不到或解析失败返回 0）</summary>
+    /// <summary>从 JsonObject 读取整数：数值可能以 int/long/double 存储，统一兼容（取不到或解析失败返回 0）</summary>
     static int TryGetUsageInt(JsonObject obj, string key)
     {
         if (obj[key] is JsonValue v)
         {
             if (v.TryGetValue<int>(out int i)) return i;
             if (v.TryGetValue<long>(out long l)) return (int)l;
+            if (v.TryGetValue<double>(out double d)) return (int)d;
         }
         return 0;
     }
@@ -459,7 +520,8 @@ public class LanguageModelRouter(
 
         string label = GetGroupLabel(index, cfg);
         string ep = ch.Endpoint.TrimEnd('/');
-        if (!ep.Contains("/models"))
+        // 用 EndsWith 判断而非 Contains，避免 Endpoint 路径中含 /modelserver 等前缀时误判
+        if (!ep.EndsWith("/models", StringComparison.OrdinalIgnoreCase))
             ep += "/models";
 
         try
@@ -668,7 +730,8 @@ public class LanguageModelRouter(
                 ch.ApiKey,
                 ParseExtraHeaders(ch.ExtraHeaders),
                 ch.ReasoningEffort,
-                ParseExtraBody(ch.ExtraBody)));
+                ParseExtraBody(ch.ExtraBody),
+                ParseExtraBody(ch.ExtraBodyNotThinking)));
         }
 
         return groups;

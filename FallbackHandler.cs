@@ -28,6 +28,7 @@ public class FallbackHandler : DelegatingHandler
     readonly Action<int>? onFailover;
     readonly Func<bool>? consumeTestFlag;
     readonly Func<bool> getShowThinkingChain;
+    readonly Func<bool> getThinkingMode;
 
     static readonly string[] ReasoningKeys = {
         "reasoning_content",
@@ -46,7 +47,8 @@ public class FallbackHandler : DelegatingHandler
         Func<bool>? getAutoFailoverEnabled = null,
         Action<int>? onFailover = null,
         Func<bool>? consumeTestFlag = null,
-        Func<bool>? getShowThinkingChain = null
+        Func<bool>? getShowThinkingChain = null,
+        Func<bool>? getThinkingMode = null
     ) : base(innerHandler)
     {
         this.getGroups = getGroups;
@@ -57,6 +59,7 @@ public class FallbackHandler : DelegatingHandler
         this.onFailover = onFailover;
         this.consumeTestFlag = consumeTestFlag;
         this.getShowThinkingChain = getShowThinkingChain ?? (() => true);
+        this.getThinkingMode = getThinkingMode ?? (() => true);
     }
 
     protected override async Task<HttpResponseMessage> SendAsync(
@@ -73,6 +76,7 @@ public class FallbackHandler : DelegatingHandler
         bool autoEnabled = getAutoFailoverEnabled();
         var errorKeywords = getErrorKeywords();
         int retryDelayMs = getRetryDelayMs();
+        bool thinkingMode = getThinkingMode();
 
         int startGroup = forcedIdx >= 0 && forcedIdx < groups.Count ? forcedIdx : 0;
         int maxAttempts = autoEnabled ? groups.Count : 1;
@@ -89,7 +93,7 @@ public class FallbackHandler : DelegatingHandler
             req.RequestUri = BuildNewUri(request.RequestUri!, group.Endpoint.AbsoluteUri);
             if (req.Headers.Authorization != null)
                 req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", group.ApiKey);
-            await RewriteRequestBody(req, group.ModelId, group.ReasoningEffort, group.ExtraBody);
+            await RewriteRequestBody(req, group.ModelId, group.ReasoningEffort, group.ExtraBody, group.ExtraBodyNotThinking, thinkingMode);
             if (group.ExtraHeaders != null)
             {
                 foreach (var header in group.ExtraHeaders)
@@ -210,7 +214,7 @@ public class FallbackHandler : DelegatingHandler
         return clone;
     }
 
-    static async Task RewriteRequestBody(HttpRequestMessage req, string newModelId, string? reasoningEffort = null, IReadOnlyDictionary<string, object?>? extraBody = null)
+    static async Task RewriteRequestBody(HttpRequestMessage req, string newModelId, string? reasoningEffort = null, IReadOnlyDictionary<string, object?>? extraBody = null, IReadOnlyDictionary<string, object?>? extraBodyNotThinking = null, bool thinkingMode = true)
     {
         if (req.Content == null) return;
         try
@@ -218,13 +222,23 @@ public class FallbackHandler : DelegatingHandler
             byte[] body = await req.Content.ReadAsByteArrayAsync();
             JObject obj = JObject.Parse(Encoding.UTF8.GetString(body));
             obj["model"] = newModelId;
-            if (string.IsNullOrWhiteSpace(reasoningEffort))
-                obj.Remove("reasoning_effort");
-            else
-                obj["reasoning_effort"] = reasoningEffort;
-            if (extraBody != null)
+
+            if (thinkingMode)
             {
-                foreach (var kvp in extraBody)
+                // 思考模式：按组配置写入推理强度
+                if (!string.IsNullOrWhiteSpace(reasoningEffort))
+                    obj["reasoning_effort"] = reasoningEffort;
+            }
+            else
+            {
+                // 非思考模式：先清掉 thinking / reasoning_effort，稍后显式写入禁用思考
+                obj.Remove("reasoning_effort");
+                obj.Remove("thinking");
+            }
+
+            void ApplyDict(IReadOnlyDictionary<string, object?> dict)
+            {
+                foreach (var kvp in dict)
                 {
                     // ParseExtraBody 对嵌套对象/数组返回 System.Text.Json.JsonElement，
                     // 必须用 GetRawText 重新解析，否则 JToken.FromObject(JsonElement) 会损坏结构
@@ -237,6 +251,43 @@ public class FallbackHandler : DelegatingHandler
                         obj[kvp.Key] = JToken.FromObject(kvp.Value);
                 }
             }
+
+            if (extraBody != null)
+            {
+                foreach (var kvp in extraBody)
+                {
+                    // 非思考模式下跳过 thinking / reasoning_effort，避免组配置的 ExtraBody 又把思考相关参数写回请求体
+                    if (!thinkingMode && (kvp.Key.Equals("thinking", StringComparison.OrdinalIgnoreCase)
+                        || kvp.Key.Equals("reasoning_effort", StringComparison.OrdinalIgnoreCase)))
+                        continue;
+
+                    // ParseExtraBody 对嵌套对象/数组返回 System.Text.Json.JsonElement，
+                    // 必须用 GetRawText 重新解析，否则 JToken.FromObject(JsonElement) 会损坏结构
+                    // （如 thinking 嵌套对象丢失字段导致上游 400 "missing field type"）
+                    if (kvp.Value is System.Text.Json.JsonElement el)
+                        obj[kvp.Key] = JToken.Parse(el.GetRawText());
+                    else if (kvp.Value == null)
+                        obj[kvp.Key] = JValue.CreateNull();
+                    else
+                        obj[kvp.Key] = JToken.FromObject(kvp.Value);
+                }
+            }
+
+            if (!thinkingMode)
+            {
+                if (extraBodyNotThinking is { Count: > 0 })
+                {
+                    // 组级非思考请求体：完全由用户指定（可自定义 thinking 禁用写法）
+                    ApplyDict(extraBodyNotThinking);
+                }
+                else
+                {
+                    // 默认对齐官方 extraBodyNotThinking：显式禁用思考，
+                    // 解决个别渠道（如硅基）不传 thinking 参数时仍输出思维链的问题
+                    obj["thinking"] = JObject.Parse("{\"type\":\"disabled\"}");
+                }
+            }
+
             byte[] newBody = Encoding.UTF8.GetBytes(obj.ToString(Newtonsoft.Json.Formatting.None));
             req.Content = new ByteArrayContent(newBody);
             req.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
@@ -366,7 +417,8 @@ public class FallbackHandler : DelegatingHandler
         public override bool CanRead => true;
         public override bool CanSeek => false;
         public override bool CanWrite => false;
-        public override long Length => innerStream.Length;
+        // 底层是网络流不可 Seek，访问 Length 会抛 NotSupportedException；返回 0 保持健壮
+        public override long Length => 0;
         public override long Position { get => innerStream.Position; set => throw new NotSupportedException(); }
         public override void Flush() => innerStream.Flush();
         public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException("请使用 ReadAsync");
@@ -387,4 +439,4 @@ public class FallbackHandler : DelegatingHandler
     }
 }
 
-public record FallbackGroup(int Slot, Uri Endpoint, string ModelId, string ApiKey, IReadOnlyDictionary<string, string>? ExtraHeaders = null, string? ReasoningEffort = null, IReadOnlyDictionary<string, object?>? ExtraBody = null);
+public record FallbackGroup(int Slot, Uri Endpoint, string ModelId, string ApiKey, IReadOnlyDictionary<string, string>? ExtraHeaders = null, string? ReasoningEffort = null, IReadOnlyDictionary<string, object?>? ExtraBody = null, IReadOnlyDictionary<string, object?>? ExtraBodyNotThinking = null);

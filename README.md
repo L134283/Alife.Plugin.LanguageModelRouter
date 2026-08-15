@@ -9,6 +9,8 @@
 - **🔍 探测可用模型**：点击「探测」按钮拉取 `/v1/models` 获取该组渠道的完整模型列表，下拉选择后自动填入 Model ID
 - **⚙️ 自动容灾开关**：可在容灾设置中开启/关闭自动切换，关闭后只使用当前选定组
 - **🧠 思维链显示开关**：可实时开启/关闭 reasoning/thinking 等字段到可见内容的转换，关闭后隐藏思维链
+- **⚡ 智能思考/非思考切换**（独立开关）：开启后默认非思考模式（回复更快、token 更省），当 AI 需要调用工具、处理群消息、主动监听等复杂任务时自动切回思考模式
+  - 非思考模式**显式发送 `{"thinking":{"type":"disabled"}}`**（对齐官方），彻底关闭思维链；可在每组"Extra Body NotThinking"中自定义禁用写法
 - **📋 各组独立配置**：每组可单独设置 Reasoning Effort、Extra Headers、Extra Body
 - **➕ 自由增删渠道组**：可随时添加/删除渠道组（默认最多 12 组，主组不可删），旧版固定 4 组配置自动迁移
 
@@ -63,4 +65,4 @@ AI 会调用 SwitchModelGroup 函数直接切换，无需手动操作 UI。
 
 ## 版本
 
-v4.0.2（修复 Token 消耗统计为 0：流式收尾 usage 帧解析；适配 Alife 4.0.0+，依赖 Alife.Function.FunctionCaller）
+v4.1.0（①修复 Token 统计虚高：部分渠道流式多次携带 usage 导致框架重复累加显示百万级，现只取最后一次 usage 帧统一上报；②新增智能思考/非思考切换（独立开关）：默认非思考更快更省 token，AI 需调用工具/群消息/监听等复杂任务自动切回思考；非思考模式显式发送 `{"thinking":{"type":"disabled"}}` 彻底关闭思维链，每组可自定义 ExtraBodyNotThinking；③稳定性修复：EnsureHttpClient 加锁防并发重复构建、非思考模式丢弃残留 reasoning、兼容 prompt_cache_hit_tokens 缓存统计、/models 拼接 EndsWith 判断、强制锁定索引指向未配置组时复位。适配 Alife 4.0.0+，依赖 Alife.Function.FunctionCaller）

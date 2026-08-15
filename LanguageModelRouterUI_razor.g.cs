@@ -1465,6 +1465,9 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
         AddInput(b, "Extra Body (JSON)", ch.ExtraBody ?? "", v => ch.ExtraBody = string.IsNullOrWhiteSpace(v) ? null : v);
         AddHint(b, "额外请求体，JSON 格式，如 {\"temperature\":0.7}");
 
+        AddInput(b, "Extra Body NotThinking (JSON)", ch.ExtraBodyNotThinking ?? "", v => ch.ExtraBodyNotThinking = string.IsNullOrWhiteSpace(v) ? null : v);
+        AddHint(b, "非思考模式的额外请求体，JSON 格式；留空则默认发送 {\"thinking\":{\"type\":\"disabled\"}}，明确要求模型关闭思考");
+
         b.CloseElement();
     }
 
@@ -1732,6 +1735,48 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
         b.OpenElement(_seq++, "label");
         b.AddAttribute(_seq++, "for", "showThinkingCheck");
         b.AddContent(_seq++, "显示思维链（开启后将 reasoning/thinking 等字段转为可见内容，关闭则隐藏；实时生效）");
+        b.CloseElement();
+        b.CloseElement();
+
+        // 智能思考/非思考切换
+        b.OpenElement(_seq++, "div");
+        b.AddAttribute(_seq++, "class", "ls-toggle-row");
+
+        b.OpenElement(_seq++, "input");
+        b.AddAttribute(_seq++, "type", "checkbox");
+        b.AddAttribute(_seq++, "id", "smartThinkingCheck");
+        b.AddAttribute(_seq++, "checked", Configuration.SmartThinkingEnabled);
+        b.AddAttribute(_seq++, "onchange", EventCallback.Factory.Create<ChangeEventArgs>(this, e =>
+        {
+            Configuration.SmartThinkingEnabled = e.Value is bool bv ? bv : !Configuration.SmartThinkingEnabled;
+            StateHasChanged();
+        }));
+        b.CloseElement();
+
+        b.OpenElement(_seq++, "label");
+        b.AddAttribute(_seq++, "for", "smartThinkingCheck");
+        b.AddContent(_seq++, "智能思考/非思考切换（开启后默认非思考：回复更快、token 更省；AI 需调用工具等复杂任务时自动切回思考）");
+        b.CloseElement();
+        b.CloseElement();
+
+        // 默认思考模式（仅在智能切换开启时生效）
+        b.OpenElement(_seq++, "div");
+        b.AddAttribute(_seq++, "class", "ls-toggle-row");
+
+        b.OpenElement(_seq++, "input");
+        b.AddAttribute(_seq++, "type", "checkbox");
+        b.AddAttribute(_seq++, "id", "defaultThinkingCheck");
+        b.AddAttribute(_seq++, "checked", Configuration.DefaultThinking);
+        b.AddAttribute(_seq++, "onchange", EventCallback.Factory.Create<ChangeEventArgs>(this, e =>
+        {
+            Configuration.DefaultThinking = e.Value is bool bv ? bv : !Configuration.DefaultThinking;
+            StateHasChanged();
+        }));
+        b.CloseElement();
+
+        b.OpenElement(_seq++, "label");
+        b.AddAttribute(_seq++, "for", "defaultThinkingCheck");
+        b.AddContent(_seq++, "默认思考模式（智能切换开启时生效：开启则始终思考；关闭则默认非思考，仅复杂任务时思考）");
         b.CloseElement();
         b.CloseElement();
     }

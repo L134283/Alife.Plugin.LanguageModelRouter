@@ -14,6 +14,7 @@ public class GroupChannel
     public string? ReasoningEffort { get; set; }
     public string? ExtraHeaders { get; set; }
     public string? ExtraBody { get; set; }
+    public string? ExtraBodyNotThinking { get; set; } // 非思考模式请求体（对齐官方 extraBodyNotThinking，默认 {"thinking":{"type":"disabled"}}）
 
     /// <summary>是否具备可用渠道（Endpoint 与 ApiKey 均非空）</summary>
     public bool IsConfigured => !string.IsNullOrWhiteSpace(Endpoint) && !string.IsNullOrWhiteSpace(ApiKey);
@@ -69,6 +70,10 @@ public class LanguageModelRouterConfig
     public bool PriorityMainChannel { get; set; } = false; // 优先主渠道：每次请求先试主渠道，全程静默容灾
     public bool ShowThinkingChain { get; set; } = true; // 是否将 reasoning/thinking 转为可见思维链
 
+    // === 智能思考/非思考切换（对齐官方 OpenAILanguageModel 机制）===
+    public bool SmartThinkingEnabled { get; set; } = false; // 独立开关：启用后默认非思考，AI 需要深度思考时自动切回思考
+    public bool DefaultThinking { get; set; } = false;      // 开关开启时：默认是否思考（true=恒思考，false=默认非思考）
+
     // === 运行时状态（每个桌宠独立，随配置持久化）===
     public int ForcedGroupIndex { get; set; } = -1; // -1=自动容灾, >=0=强制使用 Groups 索引
     public bool AutoFailoverEnabled { get; set; } = true; // 是否启用自动容灾切换
@@ -90,8 +95,9 @@ public class LanguageModelRouterConfig
         if (Groups.Count > MaxGroups)
             Groups = Groups.Take(MaxGroups).ToList();
 
-        // 修正强制锁定索引（越界或指向已删除组时复位为自动容灾）
-        if (ForcedGroupIndex >= Groups.Count)
+        // 修正强制锁定索引：越界、指向已删除组、或指向未配置组时复位为自动容灾，
+        // 避免 UI 显示"强制锁定某组"但实际请求仍从主组开始的不一致
+        if (ForcedGroupIndex >= Groups.Count || (ForcedGroupIndex >= 0 && !Groups[ForcedGroupIndex].IsConfigured))
             ForcedGroupIndex = -1;
     }
 
