@@ -1759,24 +1759,24 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
         b.CloseElement();
         b.CloseElement();
 
-        // 默认思考模式（仅在智能切换开启时生效）
+        // 忽略历史隐式功能占用
         b.OpenElement(_seq++, "div");
         b.AddAttribute(_seq++, "class", "ls-toggle-row");
 
         b.OpenElement(_seq++, "input");
         b.AddAttribute(_seq++, "type", "checkbox");
-        b.AddAttribute(_seq++, "id", "defaultThinkingCheck");
-        b.AddAttribute(_seq++, "checked", Configuration.DefaultThinking);
+        b.AddAttribute(_seq++, "id", "ignorePersistentThinkingCheck");
+        b.AddAttribute(_seq++, "checked", Configuration.IgnorePersistentThinking);
         b.AddAttribute(_seq++, "onchange", EventCallback.Factory.Create<ChangeEventArgs>(this, e =>
         {
-            Configuration.DefaultThinking = e.Value is bool bv ? bv : !Configuration.DefaultThinking;
+            Configuration.IgnorePersistentThinking = e.Value is bool bv ? bv : !Configuration.IgnorePersistentThinking;
             StateHasChanged();
         }));
         b.CloseElement();
 
         b.OpenElement(_seq++, "label");
-        b.AddAttribute(_seq++, "for", "defaultThinkingCheck");
-        b.AddContent(_seq++, "默认思考模式（智能切换开启时生效：开启则始终思考；关闭则默认非思考，仅复杂任务时思考）");
+        b.AddAttribute(_seq++, "for", "ignorePersistentThinkingCheck");
+        b.AddContent(_seq++, "忽略历史隐式功能占用（针对历史中调用过工具的角色：日常闲聊走非思考更省 token，AI 即将调用工具/函数出错时仍自动切回思考）");
         b.CloseElement();
         b.CloseElement();
     }

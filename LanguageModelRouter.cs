@@ -194,15 +194,35 @@ public class LanguageModelRouter(
 
     /// <summary>
     /// 智能思考/非思考切换判断（对齐官方 OpenAILanguageModel 的
-    /// "defaultThinking || GetThinkingRequester().IsOccupied" 逻辑）：
+    /// "GetThinkingRequester().IsOccupied" 逻辑）：
     /// - 开关关闭 → 恒思考（保持各组原配置的思考行为，与旧版一致）
-    /// - 开关开启 → 默认思考 or 有模块请求思考（如 AI 需调用工具/群消息/监听等）→ 思考；
+    /// - 开关开启 → 有模块请求思考（如 AI 需调用工具/群消息/监听等）→ 思考；
     ///   否则非思考（删去 thinking/reasoning_effort 参数，回复快、token 省）
+    /// - IgnorePersistentThinking 开启时：忽略框架 XmlFunctionCaller 的"隐式功能激活中"等
+    ///   【历史判定】类永久占用（历史中调用过工具的角色会永远占用，导致日常闲聊也恒思考），
+    ///   只响应当次任务的瞬时信号（重新激活隐式功能、即将使用隐式功能、需要处理函数异常等），
+    ///   让这类角色日常闲聊也能走非思考
     /// </summary>
     internal bool ComputeThinkingMode(LanguageModelRouterConfig cfg)
     {
         if (!cfg.SmartThinkingEnabled) return true;
-        return cfg.DefaultThinking || thinkingRequester.IsOccupied;
+        if (!cfg.IgnorePersistentThinking)
+            return thinkingRequester.IsOccupied;
+
+        // 过滤"隐式功能激活中"类永久占用：逐 marker 判断，仅当存在非永久性原因时才视为需要思考
+        bool hasEphemeralRequest = false;
+        thinkingRequester.Query(markers =>
+        {
+            foreach (var marker in markers)
+            {
+                string reason = marker.Reason ?? "";
+                if (reason.Contains("隐式功能激活中", StringComparison.OrdinalIgnoreCase))
+                    continue; // 永久占用：由历史文档标签引起，忽略
+                hasEphemeralRequest = true;
+                break;
+            }
+        });
+        return hasEphemeralRequest;
     }
 
     /// <summary>对话入口：组装 OpenAI 兼容请求体，经 FallbackHandler 管道发送，逐帧解析 SSE 输出（参考官方 OpenAIVisionModel 的裸 HttpClient 写法）</summary>
