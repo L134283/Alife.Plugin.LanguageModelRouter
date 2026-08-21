@@ -60,6 +60,9 @@ public class LanguageModelRouter(
     /// <summary>HttpClient 创建锁：并发聊天请求可能同时进入 EnsureHttpClient，避免重复构建管道</summary>
     readonly object httpClientLock = new();
 
+    /// <summary>当前请求的最后一条用户消息（用于自定义关键词触发思考匹配）。请求由 ChatBot 串行分发，实例内无需加锁</summary>
+    string? currentUserMessage;
+
     /// <summary>暴露思考请求记事本，供框架生态（XmlFunctionCaller 等）请求"本次应使用思考模式"</summary>
     public OccupationNotepad GetThinkingRequester() => thinkingRequester;
 
@@ -202,10 +205,13 @@ public class LanguageModelRouter(
     ///   【历史判定】类永久占用（历史中调用过工具的角色会永远占用，导致日常闲聊也恒思考），
     ///   只响应当次任务的瞬时信号（重新激活隐式功能、即将使用隐式功能、需要处理函数异常等），
     ///   让这类角色日常闲聊也能走非思考
+    /// - ThinkingTriggerKeywords 配置的关键词命中当前用户消息时，即使默认非思考也强制走思考模式
     /// </summary>
     internal bool ComputeThinkingMode(LanguageModelRouterConfig cfg)
     {
         if (!cfg.SmartThinkingEnabled) return true;
+        // 用户消息命中自定义关键词 → 强制思考（优先级最高，先于忽略永久占用判断）
+        if (MatchesThinkingTrigger(cfg, currentUserMessage)) return true;
         if (!cfg.IgnorePersistentThinking)
             return thinkingRequester.IsOccupied;
 
@@ -223,6 +229,24 @@ public class LanguageModelRouter(
             }
         });
         return hasEphemeralRequest;
+    }
+
+    /// <summary>
+    /// 自定义关键词触发思考匹配：关键词任一命中当前用户消息即返回 true（忽略大小写）。
+    /// 支持中英文逗号、分号、竖线作为分隔符（如"代码,数学"或"代码，数学；分析"）。
+    /// </summary>
+    static bool MatchesThinkingTrigger(LanguageModelRouterConfig cfg, string? userMessage)
+    {
+        if (string.IsNullOrWhiteSpace(cfg.ThinkingTriggerKeywords) || string.IsNullOrWhiteSpace(userMessage))
+            return false;
+
+        foreach (var kw in cfg.ThinkingTriggerKeywords.Split(new[] { ',', '，', ';', '；', '|', '｜' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (kw.Length == 0) continue;
+            if (userMessage.Contains(kw, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return false;
     }
 
     /// <summary>对话入口：组装 OpenAI 兼容请求体，经 FallbackHandler 管道发送，逐帧解析 SSE 输出（参考官方 OpenAIVisionModel 的裸 HttpClient 写法）</summary>
@@ -248,7 +272,9 @@ public class LanguageModelRouter(
             FallbackGroup primary = groups[0];
 
             // 组装 OpenAI 兼容请求体；FallbackHandler 在管道内按当前组重写 model / reasoning_effort / extraBody 与目标地址
+            // 同时记录最后一条 user 消息，供"自定义关键词触发思考"匹配
             var messages = new JsonArray();
+            currentUserMessage = null;
             foreach (var msg in chatHistoryAgentThread.ChatHistory)
             {
                 string role = msg.Role == AuthorRole.System ? "system"
@@ -259,6 +285,8 @@ public class LanguageModelRouter(
                 // 上一轮思考块可能带 __THINK__ 前缀，发送前清理，避免污染上下文
                 if (content != null && content.StartsWith(ThinkContentPrefix))
                     content = content.Substring(ThinkContentPrefix.Length);
+                if (role == "user")
+                    currentUserMessage = content;
 
                 var entry = new JsonObject
                 {

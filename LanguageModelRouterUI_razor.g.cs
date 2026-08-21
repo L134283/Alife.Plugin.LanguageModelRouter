@@ -1779,6 +1779,9 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
         b.AddContent(_seq++, "忽略历史隐式功能占用（针对历史中调用过工具的角色：日常闲聊走非思考更省 token，AI 即将调用工具/函数出错时仍自动切回思考）");
         b.CloseElement();
         b.CloseElement();
+
+        AddInput(b, "思考触发关键词（逗号分隔）", Configuration.ThinkingTriggerKeywords ?? "", v => Configuration.ThinkingTriggerKeywords = string.IsNullOrWhiteSpace(v) ? null : v);
+        AddHint(b, "用户消息命中任一关键词时强制走思考模式（即使默认非思考也临时切回），适合需要深度推理的场景，如：代码,数学,分析");
     }
 
     // ==================== Switch ====================

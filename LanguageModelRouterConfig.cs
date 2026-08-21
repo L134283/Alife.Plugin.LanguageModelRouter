@@ -74,6 +74,8 @@ public class LanguageModelRouterConfig
     public bool SmartThinkingEnabled { get; set; } = false; // 独立开关：启用后默认非思考，AI 需要深度思考时自动切回思考
     public bool IgnorePersistentThinking { get; set; } = false; // 忽略框架"隐式功能激活中"类永久占用：只响应当次任务真正需要思考的信号（如即将调用工具、函数出错等），
                                                                 // 使历史中调用过工具的角色日常闲聊也能走非思考（默认关闭，保持官方行为）
+    public string? ThinkingTriggerKeywords { get; set; } // 自定义关键词触发思考（逗号分隔）：用户消息命中任一关键词时强制走思考模式，
+                                                         // 即使在默认非思考模式下也会临时切回思考（适合需要深度推理的场景）
 
     // === 运行时状态（每个桌宠独立，随配置持久化）===
     public int ForcedGroupIndex { get; set; } = -1; // -1=自动容灾, >=0=强制使用 Groups 索引
