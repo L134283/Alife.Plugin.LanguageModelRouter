@@ -1456,7 +1456,10 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
 
         ProbeSection(b, g);
 
-        AddPassword(b, "API Key", ch.ApiKey ?? "", v => ch.ApiKey = v);
+        // 存储为 DPAPI 密文：显示时解密，用户输入时加密（GroupConfig 开头的 EnsureGroups 已完成旧明文迁移）
+        AddPassword(b, "API Key", LanguageModelRouterConfig.UnprotectSecret(ch.ApiKey),
+            v => ch.ApiKey = LanguageModelRouterConfig.ProtectSecret(v) ?? "");
+        AddHint(b, "已使用 Windows DPAPI 加密存储，仅当前系统用户可解密");
 
         AddInput(b, "Reasoning Effort", ch.ReasoningEffort ?? "", v => ch.ReasoningEffort = string.IsNullOrWhiteSpace(v) ? null : v);
         AddHint(b, "推理强度，如 low / medium / high，留空则不设置");

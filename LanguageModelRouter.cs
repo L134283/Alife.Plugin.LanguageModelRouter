@@ -576,7 +576,8 @@ public class LanguageModelRouter(
         {
             using var client = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
             var req = new HttpRequestMessage(HttpMethod.Get, ep);
-            req.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", ch.ApiKey);
+            req.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue(
+                "Bearer", LanguageModelRouterConfig.UnprotectSecret(ch.ApiKey));
             var resp = await client.SendAsync(req);
             var body = await resp.Content.ReadAsStringAsync();
 
@@ -775,7 +776,8 @@ public class LanguageModelRouter(
                 i,
                 uri,
                 ch.ModelId ?? "",
-                ch.ApiKey,
+                // 存储为 DPAPI 密文，进入请求管道前解密（主请求与 FallbackHandler 按组重写均取自这里）
+                LanguageModelRouterConfig.UnprotectSecret(ch.ApiKey),
                 ParseExtraHeaders(ch.ExtraHeaders),
                 ch.ReasoningEffort,
                 ParseExtraBody(ch.ExtraBody),

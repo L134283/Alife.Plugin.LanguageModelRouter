@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Security.Cryptography;
+using System.Text;
 
 namespace Alife.Plugin.LanguageModelRouter;
 
@@ -24,6 +26,13 @@ public class LanguageModelRouterConfig
 {
     public const int MinGroups = 1;
     public const int MaxGroups = 12;
+
+    /// <summary>密文标记前缀（区分 DPAPI 密文与旧明文配置）</summary>
+    public const string ProtectedPrefix = "dpapi:v1:";
+
+    /// <summary>DPAPI 熵值：绑定插件身份，防止其他程序直接解密本插件密文</summary>
+    static readonly byte[] SecretEntropy =
+        Encoding.UTF8.GetBytes("Alife.Plugin.LanguageModelRouter.ApiKey.v1");
 
     /// <summary>动态渠道组列表（列表顺序即容灾顺序，第 1 个即主组）</summary>
     public List<GroupChannel> Groups { get; set; } = new();
@@ -102,6 +111,8 @@ public class LanguageModelRouterConfig
         // 避免 UI 显示"强制锁定某组"但实际请求仍从主组开始的不一致
         if (ForcedGroupIndex >= Groups.Count || (ForcedGroupIndex >= 0 && !Groups[ForcedGroupIndex].IsConfigured))
             ForcedGroupIndex = -1;
+
+        EnsureApiKeysProtected();
     }
 
     bool HasLegacyConfig()
@@ -168,5 +179,64 @@ public class LanguageModelRouterConfig
         else if (ForcedGroupIndex > zeroBasedIndex)
             ForcedGroupIndex--;
         return true;
+    }
+
+    /// <summary>将所有明文 Key（含旧版扁平字段）原地迁移为当前 Windows 用户可解密的 DPAPI 密文，幂等。</summary>
+    public void EnsureApiKeysProtected()
+    {
+        if (Groups != null)
+        {
+            foreach (var ch in Groups)
+                ch.ApiKey = ProtectSecret(ch.ApiKey) ?? "";
+        }
+
+        // 旧版扁平字段迁移进 Groups 后不再使用，但明文若残留在配置文件里加密就失去意义，一并保护
+        ApiKey1 = ProtectSecret(ApiKey1) ?? "";
+        ApiKey2 = ProtectSecret(ApiKey2);
+        ApiKey3 = ProtectSecret(ApiKey3);
+        ApiKey4 = ProtectSecret(ApiKey4);
+    }
+
+    /// <summary>加密机密：空值或已加密（带前缀）原样返回，其余用 DPAPI（CurrentUser）加密。</summary>
+    public static string? ProtectSecret(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value) || value.StartsWith(ProtectedPrefix, StringComparison.Ordinal))
+            return value;
+
+        try
+        {
+            byte[] encrypted = ProtectedData.Protect(
+                Encoding.UTF8.GetBytes(value), SecretEntropy, DataProtectionScope.CurrentUser);
+            return ProtectedPrefix + Convert.ToBase64String(encrypted);
+        }
+        catch (Exception ex)
+        {
+            // DPAPI 不可用（如非 Windows 平台）时保持明文可用，不让加密拖垮请求链路
+            Console.WriteLine($"[灵枢] API Key 加密失败，暂以明文保存：{ex.Message}");
+            return value;
+        }
+    }
+
+    /// <summary>解密机密：空值返回空串；无前缀视为旧明文配置原样返回（首次迁移前兼容）；
+    /// 解密失败（密文来自其他 Windows 用户或已损坏）按未配置处理，避免泄漏或误发。</summary>
+    public static string UnprotectSecret(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return "";
+
+        if (!value.StartsWith(ProtectedPrefix, StringComparison.Ordinal))
+            return value;
+
+        try
+        {
+            byte[] encrypted = Convert.FromBase64String(value[ProtectedPrefix.Length..]);
+            byte[] plain = ProtectedData.Unprotect(
+                encrypted, SecretEntropy, DataProtectionScope.CurrentUser);
+            return Encoding.UTF8.GetString(plain);
+        }
+        catch (Exception ex) when (ex is CryptographicException or FormatException)
+        {
+            return "";
+        }
     }
 }
