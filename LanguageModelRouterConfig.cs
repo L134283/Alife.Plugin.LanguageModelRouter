@@ -90,6 +90,9 @@ public class LanguageModelRouterConfig
     public int ForcedGroupIndex { get; set; } = -1; // -1=自动容灾, >=0=强制使用 Groups 索引
     public bool AutoFailoverEnabled { get; set; } = true; // 是否启用自动容灾切换
 
+    // === 安全设置 ===
+    public bool EncryptApiKeys { get; set; } = true; // 是否加密 API Key 存储：开启=Windows DPAPI 密文（仅当前系统用户可解密）；关闭=明文保存于配置文件（与官方语言模型插件一致）
+
     /// <summary>
     /// 确保 Groups 可用：迁移旧扁平字段、保证至少 1 组、截断上限。
     /// 旧配置（Endpoint1~4 等）在首次加载时按旧 GroupOrder 顺序迁移为 Groups。
@@ -181,20 +184,26 @@ public class LanguageModelRouterConfig
         return true;
     }
 
-    /// <summary>将所有明文 Key（含旧版扁平字段）原地迁移为当前 Windows 用户可解密的 DPAPI 密文，幂等。</summary>
+    /// <summary>
+    /// 按 EncryptApiKeys 开关统一处理所有 Key，幂等：
+    /// - 开启：明文 Key（含旧版扁平字段）原地迁移为当前 Windows 用户可解密的 DPAPI 密文；
+    /// - 关闭：密文解密回明文保存（与官方语言模型插件一致），便于跨机器迁移/直观查看。
+    /// </summary>
     public void EnsureApiKeysProtected()
     {
         if (Groups != null)
         {
             foreach (var ch in Groups)
-                ch.ApiKey = ProtectSecret(ch.ApiKey) ?? "";
+                ch.ApiKey = EncryptApiKeys
+                    ? (ProtectSecret(ch.ApiKey) ?? "")
+                    : (UnprotectSecret(ch.ApiKey) ?? "");
         }
 
-        // 旧版扁平字段迁移进 Groups 后不再使用，但明文若残留在配置文件里加密就失去意义，一并保护
-        ApiKey1 = ProtectSecret(ApiKey1) ?? "";
-        ApiKey2 = ProtectSecret(ApiKey2);
-        ApiKey3 = ProtectSecret(ApiKey3);
-        ApiKey4 = ProtectSecret(ApiKey4);
+        // 旧版扁平字段迁移进 Groups 后不再使用，但随开关一并处理，避免明文残留或密文无意义
+        ApiKey1 = EncryptApiKeys ? (ProtectSecret(ApiKey1) ?? "") : UnprotectSecret(ApiKey1);
+        ApiKey2 = EncryptApiKeys ? ProtectSecret(ApiKey2) : UnprotectSecret(ApiKey2);
+        ApiKey3 = EncryptApiKeys ? ProtectSecret(ApiKey3) : UnprotectSecret(ApiKey3);
+        ApiKey4 = EncryptApiKeys ? ProtectSecret(ApiKey4) : UnprotectSecret(ApiKey4);
     }
 
     /// <summary>加密机密：空值或已加密（带前缀）原样返回，其余用 DPAPI（CurrentUser）加密。</summary>

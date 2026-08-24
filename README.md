@@ -14,7 +14,7 @@
   - **🔑 自定义关键词触发思考**：配置关键词（逗号/分号/竖线分隔）后，用户消息命中任一关键词即强制走思考模式，适合代码/数学/分析等需要深度推理的场景
 - **📋 各组独立配置**：每组可单独设置 Reasoning Effort、Extra Headers、Extra Body
 - **➕ 自由增删渠道组**：可随时添加/删除渠道组（默认最多 12 组，主组不可删），旧版固定 4 组配置自动迁移
-- **🔐 API Key 加密存储**：配置文件中的所有 Key 均以 Windows DPAPI 密文保存（仅当前系统用户可解密），旧明文配置自动迁移，面板中仍显示明文便于查看修改
+- **🔐 API Key 加密存储（可选开关）**：默认以 Windows DPAPI 密文保存（仅当前系统用户可解密）；可在「安全设置」中关闭加密，改为与官方语言模型插件一致的明文保存，便于跨机器迁移/直观查看
 
 ## 使用方式
 
@@ -55,7 +55,8 @@ AI 会调用 SwitchModelGroup 函数直接切换，无需手动操作 UI。
 | 组名称 | 给渠道取别名（如 deepseek、京东），AI 可通过名称切换 |
 | Endpoint | API 端点 URL，如 `https://api.openai.com/v1` |
 | Model ID | 模型标识，如 `gpt-4o`、`deepseek-chat` |
-| API Key | 认证密钥，以 Windows DPAPI 密文存储（仅当前系统用户可解密） |
+| API Key | 认证密钥，默认以 Windows DPAPI 密文存储（仅当前系统用户可解密）；关闭「加密 API Key 存储」后明文保存（与官方插件一致） |
+| 加密 API Key 存储 | 开关：开启=DPAPI 密文保存；关闭=明文保存（与官方插件一致，便于迁移） |
 | Reasoning Effort | 推理强度，可选 `low`/`medium`/`high`，留空不设置 |
 | Extra Headers | 额外请求头，JSON 格式 |
 | Extra Body | 额外请求体，JSON 格式 |
@@ -66,6 +67,8 @@ AI 会调用 SwitchModelGroup 函数直接切换，无需手动操作 UI。
 | 重试间隔 | 切换前等待时间（毫秒），默认 1000ms |
 
 ## 版本
+
+v4.4.0（新增"加密 API Key 存储"开关：开启=Windows DPAPI 密文保存（仅当前系统用户可解密），关闭=明文保存于配置文件（与官方语言模型插件一致，便于跨机器迁移）。切换开关立即转换当前所有渠道的 Key 并随配置保存。适配 Alife 4.0.0+，依赖 Alife.Function.FunctionCaller）
 
 v4.3.0（API Key 安全加固：配置中的所有 Key 改用 Windows DPAPI 加密存储（密文带 dpapi:v1: 前缀，仅当前系统用户可解密），旧明文配置自动迁移，面板照常显示明文可编辑；新增依赖 System.Security.Cryptography.ProtectedData，升级后需在插件环境页"同步环境"并重载插件。适配 Alife 4.0.0+，依赖 Alife.Function.FunctionCaller）
 

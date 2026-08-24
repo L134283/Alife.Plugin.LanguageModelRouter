@@ -1272,6 +1272,13 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
 
         b.CloseElement();
 
+        // === 安全设置（API Key 加密开关）===
+        b.OpenElement(_seq++, "div");
+        b.AddAttribute(_seq++, "class", "ls-section");
+        SectionTitle(b, "安全设置");
+        AddEncryptionToggle(b);
+        b.CloseElement();
+
         // === 渠道组（可增删，拖动排序，最上方为主组）===
         b.OpenElement(_seq++, "div");
         b.AddAttribute(_seq++, "class", "ls-groups");
@@ -1456,10 +1463,15 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
 
         ProbeSection(b, g);
 
-        // 存储为 DPAPI 密文：显示时解密，用户输入时加密（GroupConfig 开头的 EnsureGroups 已完成旧明文迁移）
+        // API Key：加密开关开启时以 DPAPI 密文存储（显示解密、输入加密）；关闭时与官方插件一致明文保存。
+        // GroupConfig 开头的 EnsureGroups 已按开关统一转换存储形态，UnprotectSecret 对明文原样返回，读取恒安全。
         AddPassword(b, "API Key", LanguageModelRouterConfig.UnprotectSecret(ch.ApiKey),
-            v => ch.ApiKey = LanguageModelRouterConfig.ProtectSecret(v) ?? "");
-        AddHint(b, "已使用 Windows DPAPI 加密存储，仅当前系统用户可解密");
+            v => ch.ApiKey = cfg.EncryptApiKeys
+                ? (LanguageModelRouterConfig.ProtectSecret(v) ?? "")
+                : v);
+        AddHint(b, cfg.EncryptApiKeys
+            ? "已使用 Windows DPAPI 加密存储，仅当前系统用户可解密"
+            : "明文保存于配置文件（与官方语言模型插件一致），请注意保护配置文件");
 
         AddInput(b, "Reasoning Effort", ch.ReasoningEffort ?? "", v => ch.ReasoningEffort = string.IsNullOrWhiteSpace(v) ? null : v);
         AddHint(b, "推理强度，如 low / medium / high，留空则不设置");
@@ -1672,6 +1684,36 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
         _detectResults[groupIndex] = display;
         _detectedModels[groupIndex] = models;
         StateHasChanged();
+    }
+
+    // ==================== API Key 加密开关 ====================
+
+    void AddEncryptionToggle(RenderTreeBuilder b)
+    {
+        b.OpenElement(_seq++, "div");
+        b.AddAttribute(_seq++, "class", "ls-toggle-row");
+
+        b.OpenElement(_seq++, "input");
+        b.AddAttribute(_seq++, "type", "checkbox");
+        b.AddAttribute(_seq++, "id", "encryptKeyCheck");
+        b.AddAttribute(_seq++, "checked", Configuration.EncryptApiKeys);
+        b.AddAttribute(_seq++, "onchange", EventCallback.Factory.Create<ChangeEventArgs>(this, e =>
+        {
+            bool next = e.Value is bool bv ? bv : !Configuration.EncryptApiKeys;
+            Configuration.EncryptApiKeys = next;
+            // 立即按新开关状态统一转换所有 Key（开启→密文，关闭→明文），随配置保存生效
+            Configuration.EnsureApiKeysProtected();
+            StateHasChanged();
+        }));
+        b.CloseElement();
+
+        b.OpenElement(_seq++, "label");
+        b.AddAttribute(_seq++, "for", "encryptKeyCheck");
+        b.AddContent(_seq++, "加密 API Key 存储（开启=Windows DPAPI 密文保存，仅当前系统用户可解密；关闭=明文保存于配置文件，与官方插件一致）");
+        b.CloseElement();
+        b.CloseElement();
+
+        AddHint(b, "切换后立即转换当前所有渠道的 Key 并随配置保存。明文模式下 Key 直接可见，便于跨机器迁移；开启加密后仅当前 Windows 用户可解密。");
     }
 
     // ==================== Auto Failover Toggle ====================
