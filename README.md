@@ -68,6 +68,8 @@ AI 会调用 SwitchModelGroup 函数直接切换，无需手动操作 UI。
 
 ## 版本
 
+v4.5.0（新增"实际服务渠道"归因接口 `LastServedGroupIndex`：在模块实例上记录最近一次成功服务的渠道组 slot，供统计类插件（如 1chuxin.TokenStats ≥4.2.3）在 TokenUsed 时经 ChatBot.LanguageModel 反射读取，解决"优先主渠道"静默容灾、锁定组故障绕行等场景下渠道归因失真（模型名/计价/余额/维度统计全部误记主组）的问题。零行为变化，旧版统计插件自动回退 ForcedGroupIndex。适配 Alife 4.0.0+，依赖 Alife.Function.FunctionCaller）
+
 v4.4.0（新增"加密 API Key 存储"开关：开启=Windows DPAPI 密文保存（仅当前系统用户可解密），关闭=明文保存于配置文件（与官方语言模型插件一致，便于跨机器迁移）。切换开关立即转换当前所有渠道的 Key 并随配置保存。适配 Alife 4.0.0+，依赖 Alife.Function.FunctionCaller）
 
 v4.3.0（API Key 安全加固：配置中的所有 Key 改用 Windows DPAPI 加密存储（密文带 dpapi:v1: 前缀，仅当前系统用户可解密），旧明文配置自动迁移，面板照常显示明文可编辑；新增依赖 System.Security.Cryptography.ProtectedData，升级后需在插件环境页"同步环境"并重载插件。适配 Alife 4.0.0+，依赖 Alife.Function.FunctionCaller）

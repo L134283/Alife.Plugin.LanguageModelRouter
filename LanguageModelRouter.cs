@@ -38,6 +38,12 @@ public class LanguageModelRouter(
     /// <summary>下一次请求模拟 429 容灾（一次性，自动复位）</summary>
     internal volatile bool TestForceFailover = false;
 
+    /// <summary>最近一次成功服务的渠道组 slot（配置 Groups 列表索引，-1=尚无请求）。
+    /// 容灾、手动锁定、「优先主渠道」静默绕行下均为本轮实际命中的组；
+    /// 供统计类插件（如 1chuxin.TokenStats ≥4.2.3）在 TokenUsed 时经 ChatBot.LanguageModel 反射读取，
+    /// 做真实渠道归因。瞬态运行状态：随实例销毁复位，不写入配置文件。</summary>
+    public int LastServedGroupIndex { get; private set; } = -1;
+
     /// <summary>渠道切换通知（静态委托，UI 订阅后刷新显示）</summary>
     internal static Action? OnGroupChanged;
 
@@ -183,7 +189,8 @@ public class LanguageModelRouter(
                 return true;
             },
             getShowThinkingChain: () => Configuration!.ShowThinkingChain,
-            getThinkingMode: () => ComputeThinkingMode(Configuration!));
+            getThinkingMode: () => ComputeThinkingMode(Configuration!),
+            onServed: slot => LastServedGroupIndex = slot);
 
         httpClient = new HttpClient(fallbackHandler)
         {

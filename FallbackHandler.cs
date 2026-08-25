@@ -29,6 +29,7 @@ public class FallbackHandler : DelegatingHandler
     readonly Func<bool>? consumeTestFlag;
     readonly Func<bool> getShowThinkingChain;
     readonly Func<bool> getThinkingMode;
+    readonly Action<int>? onServed;
 
     static readonly string[] ReasoningKeys = {
         "reasoning_content",
@@ -48,7 +49,8 @@ public class FallbackHandler : DelegatingHandler
         Action<int>? onFailover = null,
         Func<bool>? consumeTestFlag = null,
         Func<bool>? getShowThinkingChain = null,
-        Func<bool>? getThinkingMode = null
+        Func<bool>? getThinkingMode = null,
+        Action<int>? onServed = null
     ) : base(innerHandler)
     {
         this.getGroups = getGroups;
@@ -60,6 +62,7 @@ public class FallbackHandler : DelegatingHandler
         this.consumeTestFlag = consumeTestFlag;
         this.getShowThinkingChain = getShowThinkingChain ?? (() => true);
         this.getThinkingMode = getThinkingMode ?? (() => true);
+        this.onServed = onServed;
     }
 
     protected override async Task<HttpResponseMessage> SendAsync(
@@ -123,6 +126,7 @@ public class FallbackHandler : DelegatingHandler
                 {
                     onFailover?.Invoke(groupIdx);
                 }
+                onServed?.Invoke(group.Slot);   // 新增：无条件上报本轮实际服务的组（含主组直接成功）
                 await ProcessReasoningStreamAsync(response);
                 return response;
             }
