@@ -23,6 +23,7 @@ public class FallbackHandler : DelegatingHandler
     readonly Func<List<FallbackGroup>> getGroups;
     readonly Func<List<string>> getErrorKeywords;
     readonly Func<int> getRetryDelayMs;
+    readonly Func<int> getRequestTimeoutMs;
     readonly Func<int> getForcedGroupIndex;
     readonly Func<bool> getAutoFailoverEnabled;
     readonly Action<int>? onFailover;
@@ -39,11 +40,28 @@ public class FallbackHandler : DelegatingHandler
         "reasoning"
     };
 
+    /// <summary>
+    /// 内置内容安全检查类错误标记：部分渠道会对输入内容做安全审查（如阿里云百炼 data_inspection_failed、
+    /// OpenAI content_filter），命中时即使 HTTP 4xx（400/403）也触发容灾——换个渠道往往能放行。
+    /// 与用户配置的"错误关键字"合并生效，无需额外配置。
+    /// </summary>
+    static readonly string[] BuiltinFallbackMarkers =
+    {
+        "data_inspection_failed",    // 阿里云百炼：输入内容安全检查失败
+        "content_filter",            // OpenAI / 中转渠道：内容过滤拒绝
+        "content_policy_violation",  // 内容策略违规
+        "inappropriate content",     // 输入内容不合规
+        "unsafe_content",            // 不安全内容
+        "sensitive_content",         // 敏感内容
+        "moderation_failed"          // 内容审核失败
+    };
+
     public FallbackHandler(
         HttpMessageHandler innerHandler,
         Func<List<FallbackGroup>> getGroups,
         Func<List<string>>? getErrorKeywords = null,
         Func<int>? getRetryDelayMs = null,
+        Func<int>? getRequestTimeoutMs = null,
         Func<int>? getForcedGroupIndex = null,
         Func<bool>? getAutoFailoverEnabled = null,
         Action<int>? onFailover = null,
@@ -56,6 +74,7 @@ public class FallbackHandler : DelegatingHandler
         this.getGroups = getGroups;
         this.getErrorKeywords = getErrorKeywords ?? (() => new List<string>());
         this.getRetryDelayMs = getRetryDelayMs ?? (() => 1000);
+        this.getRequestTimeoutMs = getRequestTimeoutMs ?? (() => 30000);
         this.getForcedGroupIndex = getForcedGroupIndex ?? (() => -1);
         this.getAutoFailoverEnabled = getAutoFailoverEnabled ?? (() => true);
         this.onFailover = onFailover;
@@ -80,11 +99,19 @@ public class FallbackHandler : DelegatingHandler
         var errorKeywords = getErrorKeywords();
         int retryDelayMs = getRetryDelayMs();
         bool thinkingMode = getThinkingMode();
+        int requestTimeoutMs = getRequestTimeoutMs();
+        // 有效超时：<=0 视为关闭但保留 100s 兜底（等价旧 HttpClient 默认值）；>0 则下限 1s、上限 300s，
+        // 保证单次尝试超时恒为唯一生效的超时，不会与 HttpClient 内置 100s 超时冲突
+        int effectiveTimeoutMs = requestTimeoutMs > 0 ? Math.Clamp(requestTimeoutMs, 1000, 300000) : 100000;
+
+        // 用户配置的关键字 + 内置内容安全检查标记，合并后统一参与响应体匹配
+        var effectiveKeywords = MergeKeywords(errorKeywords, BuiltinFallbackMarkers);
 
         int startGroup = forcedIdx >= 0 && forcedIdx < groups.Count ? forcedIdx : 0;
         int maxAttempts = autoEnabled ? groups.Count : 1;
 
         HttpResponseMessage? lastResponse = null;
+        Exception? lastError = null;
 
         for (int attempt = 0; attempt < maxAttempts; attempt++)
         {
@@ -116,7 +143,34 @@ public class FallbackHandler : DelegatingHandler
             }
             else
             {
-                response = await base.SendAsync(req, cancellationToken);
+                try
+                {
+                    // 单次尝试限时：渠道挂起/无响应时按 effectiveTimeoutMs 快速放弃并容灾。
+                    // 若不显式限时，HttpClient 默认 100s 超时且异常不走进容灾分支，切换会卡到极慢甚至直接失败。
+                    using var timeoutCts = effectiveTimeoutMs > 0
+                        ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)
+                        : null;
+                    if (timeoutCts != null)
+                        timeoutCts.CancelAfter(effectiveTimeoutMs);
+
+                    response = await base.SendAsync(req, timeoutCts?.Token ?? cancellationToken);
+                }
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                {
+                    // 单次尝试超时（非用户主动取消）：视为该渠道不可用，继续下一组
+                    lastError = new TimeoutException($"灵枢：渠道 #{groupIdx + 1} 请求超时（{effectiveTimeoutMs}ms）");
+                    Console.WriteLine($"[灵枢] #{groupIdx + 1} {group.Endpoint.Host} ✗ 请求超时（{effectiveTimeoutMs}ms）" +
+                        (attempt < maxAttempts - 1 ? " → 容灾切换" : "，无备用渠道可切换"));
+                    continue;
+                }
+                catch (HttpRequestException ex)
+                {
+                    // 网络层错误（DNS 解析失败/连接拒绝/连接中断等）：同样视为该渠道不可用，继续容灾
+                    lastError = ex;
+                    Console.WriteLine($"[灵枢] #{groupIdx + 1} {group.Endpoint.Host} ✗ 网络错误：{ex.Message}" +
+                        (attempt < maxAttempts - 1 ? " → 容灾切换" : "，无备用渠道可切换"));
+                    continue;
+                }
             }
             lastResponse = response;
 
@@ -138,10 +192,15 @@ public class FallbackHandler : DelegatingHandler
             }
 
             bool shouldFallback = IsFallbackStatus(response.StatusCode);
-
-            if (!shouldFallback && errorKeywords.Count > 0)
+            string? errorBody = null;
+            if (!shouldFallback && effectiveKeywords.Count > 0)
             {
-                shouldFallback = await ContainsErrorKeywordsAsync(response, errorKeywords, cancellationToken);
+                // 非 429/402/5xx 时读响应体匹配关键字（含内置内容安全检查标记）。读完必须恢复 body，
+                // 否则返回给上层时读到的是空串，错误信息会丢失
+                errorBody = await SafeReadBodyAsync(response, cancellationToken);
+                shouldFallback = errorBody != null && ContainsAnyKeyword(errorBody, effectiveKeywords);
+                if (errorBody != null)
+                    RestoreBody(response, errorBody);
             }
 
             if (!shouldFallback)
@@ -159,11 +218,22 @@ public class FallbackHandler : DelegatingHandler
             {
                 try { await response.Content.ReadAsStringAsync(cancellationToken); } catch { }
                 response.Dispose();
+                lastResponse = null; // 该响应已销毁，不能作为最终结果返回（避免最后一组超时时返回已释放对象）
             }
         }
 
+        if (lastResponse == null)
+        {
+            // 所有尝试均超时/网络错误，没有可用响应：合成 504 让上层展示明确错误
+            Console.WriteLine("[灵枢] 所有渠道均请求失败（超时或网络错误）");
+            return new HttpResponseMessage(HttpStatusCode.GatewayTimeout)
+            {
+                Content = new StringContent($"灵枢：所有渠道均请求失败（最后错误：{lastError?.Message ?? "未知"}）")
+            };
+        }
+
         Console.WriteLine("[灵枢] 所有渠道均已失败");
-        return lastResponse!;
+        return lastResponse;
     }
 
     static bool IsFallbackStatus(HttpStatusCode status)
@@ -172,17 +242,51 @@ public class FallbackHandler : DelegatingHandler
         return code == 429 || code == 402 || code >= 500;
     }
 
-    static async Task<bool> ContainsErrorKeywordsAsync(HttpResponseMessage response, List<string> errorKeywords, CancellationToken ct)
+    /// <summary>合并用户关键字与内置内容安全检查标记（去重，忽略大小写）</summary>
+    static List<string> MergeKeywords(IReadOnlyList<string> userKeywords, IReadOnlyList<string> builtin)
+    {
+        var result = new List<string>(userKeywords.Count + builtin.Count);
+        foreach (var kw in userKeywords)
+        {
+            if (!string.IsNullOrWhiteSpace(kw) && !result.Contains(kw, StringComparer.OrdinalIgnoreCase))
+                result.Add(kw);
+        }
+        foreach (var kw in builtin)
+        {
+            if (!result.Contains(kw, StringComparer.OrdinalIgnoreCase))
+                result.Add(kw);
+        }
+        return result;
+    }
+
+    static bool ContainsAnyKeyword(string body, IReadOnlyList<string> keywords)
+    {
+        foreach (var kw in keywords)
+        {
+            if (body.Contains(kw, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return false;
+    }
+
+    /// <summary>安全读取响应体（读失败返回 null，不抛异常）</summary>
+    static async Task<string?> SafeReadBodyAsync(HttpResponseMessage response, CancellationToken ct)
     {
         try
         {
-            string body = await response.Content.ReadAsStringAsync(ct);
-            return errorKeywords.Any(kw => body.Contains(kw, StringComparison.OrdinalIgnoreCase));
+            return await response.Content.ReadAsStringAsync(ct);
         }
         catch
         {
-            return false;
+            return null;
         }
+    }
+
+    /// <summary>关键字匹配读掉了响应体后，用缓存内容重建 Content，保证上层仍能读到完整错误体</summary>
+    static void RestoreBody(HttpResponseMessage response, string body)
+    {
+        string? mediaType = response.Content.Headers.ContentType?.MediaType;
+        response.Content = new StringContent(body, Encoding.UTF8, mediaType ?? "application/json");
     }
 
     /// <summary>
@@ -373,9 +477,10 @@ public class FallbackHandler : DelegatingHandler
 
         private string ProcessLine(string line)
         {
-            if (!line.StartsWith("data: ")) return line;
+            // 兼容两种 SSE 行格式："data: {...}"（带空格）与 "data:{...}"（无空格）
+            if (!line.StartsWith("data:", StringComparison.OrdinalIgnoreCase)) return line;
 
-            string jsonPart = line.Substring(6).Trim();
+            string jsonPart = line.Substring(5).Trim();
             if (string.IsNullOrWhiteSpace(jsonPart) || jsonPart == "[DONE]") return line;
 
             try

@@ -76,6 +76,8 @@ public class LanguageModelRouterConfig
     // === 容灾设置 ===
     public string? ErrorKeywords { get; set; } // 逗号分隔
     public int RetryDelayMs { get; set; } = 1000;
+    public int RequestTimeoutMs { get; set; } = 30000; // 单次渠道请求超时（毫秒）：渠道挂起/无响应时按此超时视为失败并触发容灾，避免长时间卡住
+    public int StreamIdleTimeoutMs { get; set; } = 0; // SSE 流空闲超时（毫秒）：已建立连接但长时间未收到任何数据（含 keep-alive 注释行）视为异常，0=关闭
     public bool PriorityMainChannel { get; set; } = false; // 优先主渠道：每次请求先试主渠道，全程静默容灾
     public bool ShowThinkingChain { get; set; } = true; // 是否将 reasoning/thinking 转为可见思维链
 
@@ -92,6 +94,7 @@ public class LanguageModelRouterConfig
 
     // === 安全设置 ===
     public bool EncryptApiKeys { get; set; } = true; // 是否加密 API Key 存储：开启=Windows DPAPI 密文（仅当前系统用户可解密）；关闭=明文保存于配置文件（与官方语言模型插件一致）
+    public bool IgnoreSslCertificate { get; set; } = true; // 忽略 TLS 证书校验错误：默认开启以兼容自签名/证书异常的渠道；关闭后走系统证书校验，可防中间人攻击（自签名证书渠道将无法连接）
 
     /// <summary>
     /// 确保 Groups 可用：迁移旧扁平字段、保证至少 1 组、截断上限。

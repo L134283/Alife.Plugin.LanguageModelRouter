@@ -1277,6 +1277,7 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
         b.AddAttribute(_seq++, "class", "ls-section");
         SectionTitle(b, "安全设置");
         AddEncryptionToggle(b);
+        AddSslToggle(b);
         b.CloseElement();
 
         // === 渠道组（可增删，拖动排序，最上方为主组）===
@@ -1323,7 +1324,7 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
         AutoFailoverToggle(b);
 
         AddInput(b, "错误关键字（逗号分隔）", Configuration.ErrorKeywords ?? "", v => Configuration.ErrorKeywords = string.IsNullOrEmpty(v) ? null : v);
-        AddHint(b, "响应体中包含这些关键字时触发切换，如 rate_limit,insufficient_quota,billing_hard_limit\n留空则仅按 HTTP 状态码判断");
+        AddHint(b, "响应体中包含这些关键字时触发切换，如 rate_limit,insufficient_quota,billing_hard_limit\n留空则仅按 HTTP 状态码判断；内容安全检查类错误（如 data_inspection_failed、content_filter）已内置自动容灾");
 
         AddInput(b, "重试间隔（毫秒）", Configuration.RetryDelayMs.ToString(), v =>
         {
@@ -1331,6 +1332,20 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
                 Configuration.RetryDelayMs = Math.Clamp(n, 0, 30000);
         });
         AddHint(b, "切换到下一组前的等待时间，默认 1000ms，设为 0 则立即重试");
+
+        AddInput(b, "请求超时（毫秒）", Configuration.RequestTimeoutMs.ToString(), v =>
+        {
+            if (int.TryParse(v, out var n))
+                Configuration.RequestTimeoutMs = Math.Clamp(n, 1000, 300000);
+        });
+        AddHint(b, "单次渠道请求超时上限，默认 30000ms。渠道挂起/无响应时按此时间快速容灾切换，避免长时间卡住；设为 0 则保留 100 秒兜底");
+
+        AddInput(b, "流空闲超时（毫秒）", Configuration.StreamIdleTimeoutMs.ToString(), v =>
+        {
+            if (int.TryParse(v, out var n))
+                Configuration.StreamIdleTimeoutMs = Math.Clamp(n, 0, 600000);
+        });
+        AddHint(b, "已建立连接但长时间未收到任何数据（含 keep-alive）视为异常，默认 0=关闭。防止渠道返回 200 后流挂起导致永久等待；模型思考较久时可能误判，请酌情设置");
 
         b.CloseElement();
 
@@ -1714,6 +1729,31 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
         b.CloseElement();
 
         AddHint(b, "切换后立即转换当前所有渠道的 Key 并随配置保存。明文模式下 Key 直接可见，便于跨机器迁移；开启加密后仅当前 Windows 用户可解密。");
+    }
+
+    void AddSslToggle(RenderTreeBuilder b)
+    {
+        b.OpenElement(_seq++, "div");
+        b.AddAttribute(_seq++, "class", "ls-toggle-row");
+
+        b.OpenElement(_seq++, "input");
+        b.AddAttribute(_seq++, "type", "checkbox");
+        b.AddAttribute(_seq++, "id", "ignoreSslCheck");
+        b.AddAttribute(_seq++, "checked", Configuration.IgnoreSslCertificate);
+        b.AddAttribute(_seq++, "onchange", EventCallback.Factory.Create<ChangeEventArgs>(this, e =>
+        {
+            Configuration.IgnoreSslCertificate = e.Value is bool bv ? bv : !Configuration.IgnoreSslCertificate;
+            StateHasChanged();
+        }));
+        b.CloseElement();
+
+        b.OpenElement(_seq++, "label");
+        b.AddAttribute(_seq++, "for", "ignoreSslCheck");
+        b.AddContent(_seq++, "忽略 TLS 证书校验错误（默认开启，兼容自签名证书/证书异常的渠道）");
+        b.CloseElement();
+        b.CloseElement();
+
+        AddHint(b, "关闭后走系统证书校验（更安全，可防中间人攻击）；使用自签名证书或证书异常的渠道将无法连接，请在能正常访问的前提下尽量关闭。");
     }
 
     // ==================== Auto Failover Toggle ====================

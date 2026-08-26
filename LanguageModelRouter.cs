@@ -27,7 +27,8 @@ namespace Alife.Plugin.LanguageModelRouter;
     editorUI: typeof(LanguageModelRouterUI),
     defaultCategory: "Doro的妙妙工具")]
 public class LanguageModelRouter(
-    ILogger<LanguageModelRouter> logger
+    ILogger<LanguageModelRouter> logger,
+    ConfigurationSystem configurationSystem
 ) : ChatBehaviour, ILanguageModel, IConfigurable<LanguageModelRouterConfig>
 {
     /// <summary>思维链内容前缀（与官方 OpenAI 兼容处理器一致，ChatStreamingAsync 据此分流 thinking）</summary>
@@ -132,6 +133,27 @@ public class LanguageModelRouter(
         return Task.CompletedTask;
     }
 
+    /// <summary>
+    /// 将当前 Configuration 落盘（角色级配置优先，回退全局）。
+    /// 框架仅在 UI 保存时自动落盘；模块内通过函数/容灾修改的运行时状态（如 ForcedGroupIndex）
+    /// 若不主动保存，重载/重启后会丢失——这里按官方插件（如 SystemEventBoost）的标准做法显式保存。
+    /// </summary>
+    void SaveConfig()
+    {
+        try
+        {
+            if (Configuration == null) return;
+            configurationSystem.SetConfiguration(
+                typeof(LanguageModelRouter),
+                Configuration,
+                Character?.StorageKey ?? "");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[灵枢] 配置保存失败：{ex.Message}");
+        }
+    }
+
     /// <summary>构建 HTTP 管道：SocketsHttpHandler → FallbackHandler → HttpClient（容灾、推理转换、按组重写均在管道内完成）</summary>
     void EnsureHttpClient()
     {
@@ -153,9 +175,12 @@ public class LanguageModelRouter(
         // 错误关键字 / 重试间隔 / 组列表均通过动态委托每次请求读取，UI 修改即刻生效
         SocketsHttpHandler handler = new()
         {
+            // 默认忽略证书校验错误以兼容自签名/证书异常的渠道；关闭后走系统证书校验（更安全，自签名证书渠道将无法连接）
             SslOptions = new System.Net.Security.SslClientAuthenticationOptions
             {
-                RemoteCertificateValidationCallback = delegate { return true; }
+                RemoteCertificateValidationCallback = config.IgnoreSslCertificate
+                    ? delegate { return true; }
+                    : null
             },
             PooledConnectionLifetime = TimeSpan.FromMinutes(5)
         };
@@ -164,6 +189,7 @@ public class LanguageModelRouter(
             () => BuildFallbackGroups(Configuration!),
             () => ParseErrorKeywords(Configuration?.ErrorKeywords),
             () => Configuration!.RetryDelayMs,
+            getRequestTimeoutMs: () => Configuration!.RequestTimeoutMs,
             getForcedGroupIndex: () => GetForcedDisplayIndex(Configuration!),
             getAutoFailoverEnabled: () => Configuration!.AutoFailoverEnabled,
             onFailover: idx =>
@@ -177,6 +203,7 @@ public class LanguageModelRouter(
                     if (!Configuration!.PriorityMainChannel)
                     {
                         Configuration!.ForcedGroupIndex = slot;
+                        SaveConfig(); // 容灾锁定渠道随配置落盘，重启保留
                         interactor?.Poke($"灵枢已触发容灾，请告知用户，当前切换到了{label}");
                         OnGroupChanged?.Invoke();
                     }
@@ -195,7 +222,10 @@ public class LanguageModelRouter(
         httpClient = new HttpClient(fallbackHandler)
         {
             DefaultRequestVersion = HttpVersion.Version11,
-            DefaultVersionPolicy = HttpVersionPolicy.RequestVersionExact
+            DefaultVersionPolicy = HttpVersionPolicy.RequestVersionExact,
+            // 请求超时交由 FallbackHandler 按"单次渠道尝试"控制（RequestTimeoutMs），
+            // 避免 HttpClient 内置 100s 超时与配置冲突：配置 >100s 时内置超时先触发且异常不进容灾分支
+            Timeout = Timeout.InfiniteTimeSpan
         };
 
         Console.WriteLine($"[灵枢] 已就绪，主渠道：{GetGroupLabel(groups[0].Slot, config)}");
@@ -329,11 +359,16 @@ public class LanguageModelRouter(
             // 正常走 SSE 流式解析；个别渠道忽略 stream 参数返回完整 JSON 时走兼容解析
             // thinkingMode 用于解析阶段：非思考模式下若渠道仍返回 reasoning（无视 disabled），直接丢弃思维链
             bool thinkingMode = ComputeThinkingMode(Configuration!);
+            int idleTimeoutMs = Configuration!.StreamIdleTimeoutMs;
             string? mediaType = response.Content.Headers.ContentType?.MediaType;
             if (string.Equals(mediaType, "text/event-stream", StringComparison.OrdinalIgnoreCase))
-                await ReadSseAsync(response, nonThinkingContent, textReceived, thinkReceived, tokenUsed, thinkingMode, cancellationToken);
+                await ReadSseAsync(response, nonThinkingContent, textReceived, thinkReceived, tokenUsed, thinkingMode, idleTimeoutMs, cancellationToken);
             else
-                await ReadJsonAsync(response, nonThinkingContent, textReceived, thinkReceived, tokenUsed, thinkingMode, cancellationToken);
+                await ReadJsonAsync(response, nonThinkingContent, textReceived, thinkReceived, tokenUsed, thinkingMode, idleTimeoutMs, cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // 用户主动取消（停止生成）：不当作错误上报，静默结束本轮
         }
         catch (Exception e)
         {
@@ -364,7 +399,8 @@ public class LanguageModelRouter(
         return aiMessage;
     }
 
-    /// <summary>逐行读取 SSE 流并解析内容/思考/用量（FallbackHandler 已把 reasoning 字段转为带前缀的 content）</summary>
+    /// <summary>逐行读取 SSE 流并解析内容/思考/用量（FallbackHandler 已把 reasoning 字段转为带前缀的 content）。
+    /// idleTimeoutMs&gt;0 时，若超过该时长未收到任何数据（含 keep-alive 注释行）则视为连接异常，抛出明确错误而不是无限挂起。</summary>
     static async Task ReadSseAsync(
         HttpResponseMessage response,
         StringBuilder nonThinkingContent,
@@ -372,6 +408,7 @@ public class LanguageModelRouter(
         Action<string>? thinkReceived,
         Action<TokenUsage>? tokenUsed,
         bool thinkingMode,
+        int idleTimeoutMs,
         CancellationToken cancellationToken)
     {
         using var reader = new StreamReader(await response.Content.ReadAsStreamAsync(cancellationToken), Encoding.UTF8);
@@ -383,7 +420,24 @@ public class LanguageModelRouter(
 
         while (true)
         {
-            string? line = await reader.ReadLineAsync(cancellationToken);
+            string? line;
+            if (idleTimeoutMs > 0)
+            {
+                using var idleCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                idleCts.CancelAfter(idleTimeoutMs);
+                try
+                {
+                    line = await reader.ReadLineAsync(idleCts.Token);
+                }
+                catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                {
+                    throw new TimeoutException($"灵枢：响应流空闲超时（{idleTimeoutMs}ms 未收到数据），请检查渠道连通性");
+                }
+            }
+            else
+            {
+                line = await reader.ReadLineAsync(cancellationToken);
+            }
             if (line == null) break;
             if (!line.StartsWith("data:", StringComparison.OrdinalIgnoreCase)) continue;
 
@@ -411,9 +465,27 @@ public class LanguageModelRouter(
         Action<string>? thinkReceived,
         Action<TokenUsage>? tokenUsed,
         bool thinkingMode,
+        int idleTimeoutMs,
         CancellationToken cancellationToken)
     {
-        string body = await response.Content.ReadAsStringAsync(cancellationToken);
+        string body;
+        if (idleTimeoutMs > 0)
+        {
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(idleTimeoutMs);
+            try
+            {
+                body = await response.Content.ReadAsStringAsync(timeoutCts.Token);
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                throw new TimeoutException($"灵枢：读取响应超时（{idleTimeoutMs}ms 未收到完整响应），请检查渠道连通性");
+            }
+        }
+        else
+        {
+            body = await response.Content.ReadAsStringAsync(cancellationToken);
+        }
         JsonNode? node;
         try { node = JsonNode.Parse(body); } catch { node = null; }
         if (node == null) return;
@@ -454,10 +526,23 @@ public class LanguageModelRouter(
         }
         else
         {
-            // content 可能是字符串或数组（多模态）；非字符串时跳过，避免 GetValue<string> 抛异常
+            // content 可能是字符串（OpenAI 标准）或数组（多模态/部分渠道返回的 parts）；
+            // 字符串直接取；数组时提取其中的 text 部分拼接，避免直接跳过导致回复为空
             string? content = null;
             if (message["content"] is JsonValue cv && cv.TryGetValue<string>(out string? cs))
                 content = cs;
+            else if (message["content"] is JsonArray ca)
+            {
+                var parts = new StringBuilder();
+                foreach (var item in ca)
+                {
+                    if (item is JsonObject part
+                        && part["type"]?.ToString() == "text"
+                        && part["text"] is JsonValue tv && tv.TryGetValue<string>(out string? t))
+                        parts.Append(t);
+                }
+                content = parts.Length > 0 ? parts.ToString() : null;
+            }
             if (!string.IsNullOrEmpty(content))
             {
                 if (content.StartsWith(ThinkContentPrefix))
@@ -651,6 +736,7 @@ public class LanguageModelRouter(
             || raw.Equals("auto", StringComparison.OrdinalIgnoreCase))
         {
             Configuration.ForcedGroupIndex = -1;
+            SaveConfig();
             interactor?.Poke("已切换回自动容灾模式（主组优先）。");
             OnGroupChanged?.Invoke();
             return Task.CompletedTask;
@@ -715,24 +801,59 @@ public class LanguageModelRouter(
         return Task.CompletedTask;
     }
 
-    /// <summary>执行切换：写入强制锁定索引并通知 UI/用户</summary>
+    /// <summary>执行切换：写入强制锁定索引并通知 UI/用户（随配置落盘，重启保留）</summary>
     void DoSwitch(int slot)
     {
         Configuration!.ForcedGroupIndex = slot;
+        SaveConfig();
         string label = GetGroupLabel(slot, Configuration);
         Console.WriteLine($"[灵枢] 已切换 → {label}");
         interactor?.Poke($"已切换到{label}");
         OnGroupChanged?.Invoke();
     }
 
-    /// <summary>解析组编号："2"、"第2组"、"2组" 均解析为 2</summary>
+    /// <summary>中文数字映射（含"两"，最大组数 12）</summary>
+    static readonly Dictionary<char, int> ChineseNumeralMap = new()
+    {
+        ['一'] = 1, ['二'] = 2, ['两'] = 2, ['三'] = 3, ['四'] = 4,
+        ['五'] = 5, ['六'] = 6, ['七'] = 7, ['八'] = 8, ['九'] = 9, ['十'] = 10
+    };
+
+    /// <summary>解析中文数字 1~12（支持"二"、"十"、"十一"、"十二"），解析失败返回 null</summary>
+    static int? ParseChineseNumber(string s)
+    {
+        if (string.IsNullOrEmpty(s)) return null;
+        if (s.Length == 1 && ChineseNumeralMap.TryGetValue(s[0], out int single))
+            return single;
+        if (s.Length == 2 && s[0] == '十')
+        {
+            int unit = ChineseNumeralMap.TryGetValue(s[1], out int u) ? u : 0;
+            return 10 + unit; // "十一"=11，"十二"=12
+        }
+        return null;
+    }
+
+    /// <summary>解析组编号："2"、"第2组"、"2组"、"第二组"、"第12组" 均解析为对应编号</summary>
     static bool TryParseGroupNumber(string raw, out int oneBased)
     {
         oneBased = 0;
         if (int.TryParse(raw, out oneBased))
             return oneBased >= 1;
         var m = Regex.Match(raw, @"^第?\s*(\d+)\s*组?$");
-        return m.Success && int.TryParse(m.Groups[1].Value, out oneBased) && oneBased >= 1;
+        if (m.Success && int.TryParse(m.Groups[1].Value, out oneBased) && oneBased >= 1)
+            return true;
+        var m2 = Regex.Match(raw, @"^第?\s*([一二两三四五六七八九十]+)\s*组?$");
+        if (m2.Success)
+        {
+            int? n = ParseChineseNumber(m2.Groups[1].Value);
+            if (n.HasValue && n.Value >= 1)
+            {
+                oneBased = n.Value;
+                return true;
+            }
+        }
+        oneBased = 0;
+        return false;
     }
 
     /// <summary>列出所有已配置组（编号+名称），供提示用户</summary>
