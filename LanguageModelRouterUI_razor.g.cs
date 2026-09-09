@@ -16,6 +16,10 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
     int _seq;
     int? _dragSource;
 
+    /// <summary>每组渠道卡片的折叠状态（受控，避免任何 StateHasChanged 重渲染后原生 &lt;details&gt; 被意外收起）。
+    /// 键为 GroupChannel 引用，拖动排序后展开状态跟随原组内容而不是位置。</summary>
+    readonly Dictionary<GroupChannel, bool> _groupOpenStates = new();
+
     // 订阅标记，Dispose 时退订静态事件，避免累积订阅（内存泄漏 + 重复刷新）
     bool _subscribed;
 
@@ -1267,6 +1271,7 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
         AlertLine(b, "✧", "替换框架内置 OpenAI 语言模型，支持多路文本模型自动容灾切换、拖动排序与自由增删渠道组", false);
         AlertLine(b, "✧", "遇到 HTTP 429/402/5xx 错误或响应体包含指定关键字时，自动切换到下一组渠道重试", false);
         AlertLine(b, "✧", "同时支持 reasoning_content 等 SSE 思维链流的自动转换", false);
+        AlertLine(b, "✧", "原生多模态（对齐官方 OpenAI）：每组可独立开启，图片/文件/视频以原生 content parts 发送，AI 可用 LookImage/LookFile/LookVideo 查看", false);
         AlertLine(b, "◈", "使用前请在角色配置中禁用 OpenAILanguageModel，启用本模块", true);
         b.CloseElement();
 
@@ -1387,7 +1392,7 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
         b.OpenElement(_seq++, "div");
         b.AddAttribute(_seq++, "class", "ls-section");
         SectionTitle(b, "使用说明");
-        AddHint(b, "1. 在角色配置中禁用「OpenAI语言模型」，启用「灵枢 - OpenAI语言模型报错自动切换」\n2. 拖动渠道卡片可调整顺序：拖到最上方的组即为主渠道，必须填写 Endpoint、Model ID 和 API Key\n3. 其余组为备用渠道，遇到 429/402/5xx 错误时按从上到下顺序自动切换\n4. 组名称可用于 AI 识别渠道，如对桌宠说「切换到 deepseek」即可对应切换\n5. 可点击「添加渠道组」自由新增，展开备用组卡片后点「删除」移除（主组不可删，至少保留 1 组）\n6. 配置保存后即刻生效，无需重新加载模块");
+        AddHint(b, "1. 在角色配置中禁用「OpenAI语言模型」，启用「灵枢 - OpenAI语言模型报错自动切换」\n2. 拖动渠道卡片可调整顺序：拖到最上方的组即为主渠道，必须填写 Endpoint、Model ID 和 API Key\n3. 其余组为备用渠道，遇到 429/402/5xx 错误时按从上到下顺序自动切换\n4. 组名称可用于 AI 识别渠道，如对桌宠说「切换到 deepseek」即可对应切换\n5. 可点击「添加渠道组」自由新增，展开备用组卡片后点「删除」移除（主组不可删，至少保留 1 组）\n6. 配置保存后即刻生效，无需重新加载模块\n7. （可选）原生多模态：在支持多模态输入的模型组开启「原生多模态」（如图文模型 gpt-4o），图片等媒体将原生随对话发送，AI 可调用 LookImage/LookFile/LookVideo 查看；纯文本模型组请保持关闭。开启后需保存配置并重载一次本插件以完成 Look 系函数注册");
         b.CloseElement();
     }
 
@@ -1449,6 +1454,15 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
         return cfg.Groups[g].IsConfigured;
     }
 
+    /// <summary>槽位是否开启了"原生多模态"（组卡片徽标与配置提示用）</summary>
+    bool IsNativeEnabledSlot(int g)
+    {
+        var cfg = Configuration!;
+        cfg.EnsureGroups();
+        if (g < 0 || g >= cfg.Groups.Count) return false;
+        return cfg.Groups[g].EnableNativeMultimodal;
+    }
+
     // ==================== Group Config ====================
 
     void GroupConfig(RenderTreeBuilder b, int g, bool isPrimary)
@@ -1488,6 +1502,12 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
             ? "已使用 Windows DPAPI 加密存储，仅当前系统用户可解密"
             : "明文保存于配置文件（与官方语言模型插件一致），请注意保护配置文件");
 
+        // 原生多模态（每组独立开关，对齐官方 OpenAI 语言模型多模态支持）
+        AddToggleRow(b, $"nativeMultimodal_{g}", ch.EnableNativeMultimodal,
+            v => ch.EnableNativeMultimodal = v,
+            "原生多模态（开启后本组按 OpenAI 原生 content parts：image_url / file / video_url 把图片等媒体随对话发送给模型）");
+        AddHint(b, "仅供支持原生多模态输入的模型开启（如图文模型 gpt-4o 系列）。纯文本模型请保持关闭（默认），避免把媒体塞给不支持的上游。\n开启后：① 媒体消息即刻以原生格式随请求发送（无需重载）；② 同时向 AI 注册 LookImage / LookFile / LookVideo 查看函数（常驻文档，需保存配置后重载一次本插件生效）。");
+
         AddInput(b, "Reasoning Effort", ch.ReasoningEffort ?? "", v => ch.ReasoningEffort = string.IsNullOrWhiteSpace(v) ? null : v);
         AddHint(b, "推理强度，如 low / medium / high，留空则不设置");
         AddInput(b, "Extra Headers (JSON)", ch.ExtraHeaders ?? "", v => ch.ExtraHeaders = string.IsNullOrWhiteSpace(v) ? null : v);
@@ -1509,6 +1529,13 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
         int slot = GetDisplaySlot(displayIndex);
         bool isPrimary = displayIndex == 0;
         bool isCurrent = IsCurrentSlot(slot);
+
+        // 折叠状态由 _groupOpenStates 受控：未记录时按"主组默认展开、备用组默认收起"
+        var cardConfig = Configuration!;
+        GroupChannel? channel = slot >= 0 && slot < cardConfig.Groups.Count ? cardConfig.Groups[slot] : null;
+        bool groupOpen = channel != null && _groupOpenStates.TryGetValue(channel, out bool savedOpen)
+            ? savedOpen
+            : isPrimary;
 
         b.OpenElement(_seq++, "div");
         b.AddAttribute(_seq++, "class", _dragSource == displayIndex ? "ls-group-card ls-group-card-dragging" : "ls-group-card");
@@ -1548,15 +1575,28 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
             b.AddContent(_seq++, "当前通道");
             b.CloseElement();
         }
+        if (IsNativeEnabledSlot(slot))
+        {
+            b.OpenElement(_seq++, "span");
+            b.AddAttribute(_seq++, "class", "ls-badge ls-badge-on");
+            b.AddContent(_seq++, "✦ 多模态");
+            b.CloseElement();
+        }
         b.CloseElement();
 
         // 卡片内容：主组与备用组均使用可折叠卡片（主组默认展开，备用组可删除）
-        AddCollapsibleGroup(b, isPrimary ? $"主渠道（第{slot + 1}组，必填）" : "展开配置", isPrimary, () => GroupConfig(b, slot, isPrimary), canRemove: !isPrimary, onRemove: () =>
-        {
-            Configuration!.RemoveGroup(slot);
-            EnsureDetectArrays();
-            StateHasChanged();
-        });
+        AddCollapsibleGroup(b,
+            isPrimary ? $"主渠道（第{slot + 1}组，必填）" : "展开配置",
+            groupOpen,
+            channel!,
+            () => GroupConfig(b, slot, isPrimary),
+            canRemove: !isPrimary,
+            onRemove: () =>
+            {
+                Configuration!.RemoveGroup(slot);
+                EnsureDetectArrays();
+                StateHasChanged();
+            });
 
         b.CloseElement();
     }
@@ -1932,6 +1972,30 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
         b.CloseElement();
     }
 
+    void AddToggleRow(RenderTreeBuilder b, string id, bool value, Action<bool> onChange, string label)
+    {
+        b.OpenElement(_seq++, "div");
+        b.AddAttribute(_seq++, "class", "ls-toggle-row");
+
+        b.OpenElement(_seq++, "input");
+        b.AddAttribute(_seq++, "type", "checkbox");
+        b.AddAttribute(_seq++, "id", id);
+        b.AddAttribute(_seq++, "checked", value);
+        b.AddAttribute(_seq++, "onchange", EventCallback.Factory.Create<ChangeEventArgs>(this, e =>
+        {
+            bool next = e.Value is bool bv ? bv : !value;
+            onChange(next);
+            StateHasChanged();
+        }));
+        b.CloseElement();
+
+        b.OpenElement(_seq++, "label");
+        b.AddAttribute(_seq++, "for", id);
+        b.AddContent(_seq++, label);
+        b.CloseElement();
+        b.CloseElement();
+    }
+
     void AddInput(RenderTreeBuilder b, string label, string value, Action<string> setter)
     {
         AddLabel(b, label);
@@ -1952,14 +2016,27 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
         b.CloseComponent();
     }
 
-    void AddCollapsibleGroup(RenderTreeBuilder b, string title, bool defaultOpen, Action renderContent, bool canRemove = false, Action? onRemove = null)
+    /// <summary>
+    /// 受控的可折叠卡片：open 状态存于 _groupOpenStates（以 GroupChannel 为键），
+    /// 点击 summary 由本组件接管（阻止原生默认折叠），保证开关等交互触发 StateHasChanged 重渲染后
+    /// 组仍保持原来的展开/收起状态。
+    /// </summary>
+    void AddCollapsibleGroup(RenderTreeBuilder b, string title, bool isOpen, GroupChannel? key, Action renderContent, bool canRemove = false, Action? onRemove = null)
     {
         b.OpenElement(_seq++, "details");
         b.AddAttribute(_seq++, "class", "ls-details");
-        if (defaultOpen)
+        if (isOpen)
             b.AddAttribute(_seq++, "open", true);
 
         b.OpenElement(_seq++, "summary");
+        b.AddAttribute(_seq++, "onclick", EventCallback.Factory.Create<MouseEventArgs>(this, e =>
+        {
+            if (key == null) return;
+            _groupOpenStates[key] = !isOpen;
+            StateHasChanged();
+        }));
+        b.AddEventPreventDefaultAttribute(_seq++, "onclick", true);
+
         b.OpenElement(_seq++, "span");
         b.AddAttribute(_seq++, "class", "ls-arrow");
         b.AddContent(_seq++, "▶");
@@ -1974,8 +2051,12 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
             b.AddAttribute(_seq++, "style", "margin-left:8px; padding:1px 10px; font-size:11px;");
             b.AddAttribute(_seq++, "onclick", EventCallback.Factory.Create(this, (MouseEventArgs e) =>
             {
+                if (key != null)
+                    _groupOpenStates.Remove(key);
                 onRemove();
             }));
+            // 删除按钮点击不冒泡到 summary，避免同时触发展开/收起
+            b.AddEventStopPropagationAttribute(_seq++, "onclick", true);
             b.AddContent(_seq++, "删除");
             b.CloseElement();
         }

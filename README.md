@@ -13,6 +13,7 @@
   - 非思考模式**显式发送 `{"thinking":{"type":"disabled"}}`**（对齐官方），彻底关闭思维链；可在每组"Extra Body NotThinking"中自定义禁用写法
   - **🔑 自定义关键词触发思考**：配置关键词（逗号/分号/竖线分隔）后，用户消息命中任一关键词即强制走思考模式，适合代码/数学/分析等需要深度推理的场景
 - **📋 各组独立配置**：每组可单独设置 Reasoning Effort、Extra Headers、Extra Body
+- **🖼️ 原生多模态（每组独立开关）**：完全对齐官方 OpenAI 语言模型的多模态写法——开启的组把图片/文件/视频等媒体以 OpenAI 原生 content parts（`image_url`/`file`/`video_url`）随对话发送给模型（模型真正"看得到"），并向 AI 注册 `LookImage`/`LookFile`/`LookVideo` 查看函数（`keep=true` 保留入上下文 / `keep=false` 临时单次补全）；纯文本模型组保持关闭，媒体会被剥离为纯文本，不改变原有行为
 - **➕ 自由增删渠道组**：可随时添加/删除渠道组（默认最多 12 组，主组不可删），旧版固定 4 组配置自动迁移
 - **🔐 API Key 加密存储（可选开关）**：默认以 Windows DPAPI 密文保存（仅当前系统用户可解密）；可在「安全设置」中关闭加密，改为与官方语言模型插件一致的明文保存，便于跨机器迁移/直观查看
 
@@ -37,6 +38,12 @@ AI 会调用 SwitchModelGroup 函数直接切换，无需手动操作 UI。
 
 面板底部「手动切换」区域点击对应按钮即可。
 
+### 原生多模态（可选，每组独立开关）
+
+1. 在支持多模态输入的渠道组卡片内开启「原生多模态」（如图文模型 gpt-4o；纯文本模型如 deepseek-chat 保持关闭）
+2. 保存配置，并在插件面板「重载此插件」一次，完成 `LookImage`/`LookFile`/`LookVideo` 查看函数的注册
+3. 开启后，图片/文件/视频等媒体会以 OpenAI 原生 content parts（`image_url`/`file`/`video_url`）随对话发送，让桌宠分析图片/文件/视频即可
+
 ### 探测模型
 
 每组 Model ID 下方有绿色「ⓘ 探测第N组」按钮。点击后拉取该渠道 `/v1/models` 接口，成功后显示模型下拉列表，选择即自动填入 Model ID。
@@ -60,6 +67,7 @@ AI 会调用 SwitchModelGroup 函数直接切换，无需手动操作 UI。
 | Reasoning Effort | 推理强度，可选 `low`/`medium`/`high`，留空不设置 |
 | Extra Headers | 额外请求头，JSON 格式 |
 | Extra Body | 额外请求体，JSON 格式 |
+| 原生多模态 | 每组独立开关：开启后该组以 OpenAI 原生 content parts（image_url/file/video_url）发送媒体并开放 Look 系函数；纯文本模型组保持关闭 |
 | 错误关键字 | 响应体含此关键字时触发切换，逗号分隔（内容安全检查类错误已内置，无需配置） |
 | 启用自动容灾 | 开启后当前组失败自动切换备用渠道 |
 | 优先主渠道 | 每次对话优先尝试主渠道，容灾全程静默 |
@@ -70,6 +78,8 @@ AI 会调用 SwitchModelGroup 函数直接切换，无需手动操作 UI。
 | 忽略 TLS 证书校验 | 默认开启以兼容自签名/证书异常渠道；关闭后走系统证书校验更安全，但自签名证书渠道将无法连接 |
 
 ## 版本
+
+v4.7.0（新增"原生多模态"支持，完全对齐官方 OpenAI 语言模型的多模态写法：①每组独立"原生多模态"开关——开启的组把对话中的图片/文件/视频以 OpenAI 原生 content parts（image_url/file/video_url）随请求发送，模型真正看得到；纯文本组关闭时媒体自动剥离为纯文本，不改变原行为；②引入与官方一致的 AlifeContentRegistry / IAlifeContentType / IMultimodalExecutor 多模态内容类型体系，为 AI 注册 LookImage/LookFile/LookVideo 查看函数（keep=true 保留入上下文 / keep=false 临时单次补全）；③请求在容灾管道内按目标组的开关逐次重写媒体 parts，开启/关闭混编的组序列也能正确处理；④UI 每组卡片新增"原生多模态"开关与"✦多模态"徽标。开启后媒体发送即时生效，Look 系函数注册需保存配置后重载一次本插件。适配 Alife 4.0.0+，依赖 Alife.Function.FunctionCaller）
 
 v4.6.0（①修复内容安全检查类 400 无容灾：内置 data_inspection_failed、content_filter、inappropriate content 等常见内容审查错误标记，命中即触发容灾切换（如阿里云百炼对输入内容审查拒绝，换渠道可放行）；②修复容灾切换极慢：新增"请求超时"配置（默认 30000ms），渠道挂起/无响应时按超时快速切换，并修复超时/网络错误异常不进容灾分支、直接中断请求的问题（DNS 失败、连接拒绝等现在也会自动切换）；③修复错误关键字匹配后响应体被消费导致上层读到空串的问题；④深审优化：用户停止生成不再误报错误、SSE 兼容 `data:` 无空格格式、支持"第二组"等中文数字切换渠道、新增"流空闲超时"防止流挂起永久等待（默认关闭）、新增"忽略 TLS 证书校验"开关（默认开启兼容自签名证书，关闭后可防中间人攻击）、单次超时成为唯一生效超时消除与 HttpClient 内置 100s 的冲突；⑤修复渠道切换/容灾锁定状态不落盘：手动切换或容灾锁定的渠道组现在随配置保存，重启后保留。适配 Alife 4.0.0+，依赖 Alife.Function.FunctionCaller）
 

@@ -29,7 +29,7 @@ namespace Alife.Plugin.LanguageModelRouter;
 public class LanguageModelRouter(
     ILogger<LanguageModelRouter> logger,
     ConfigurationSystem configurationSystem
-) : ChatBehaviour, ILanguageModel, IConfigurable<LanguageModelRouterConfig>
+) : ChatBehaviour, ILanguageModel, IConfigurable<LanguageModelRouterConfig>, IMultimodalExecutor
 {
     /// <summary>思维链内容前缀（与官方 OpenAI 兼容处理器一致，ChatStreamingAsync 据此分流 thinking）</summary>
     public const string ThinkContentPrefix = "__THINK__";
@@ -57,6 +57,9 @@ public class LanguageModelRouter(
     /// <summary>本模块注册的 XmlHandler（热重载销毁时必须注销，避免旧 handler 在表中累积导致函数被重复执行）</summary>
     XmlHandler? registeredHandler;
 
+    /// <summary>原生多模态输入 XmlHandler（LookImage/LookFile/LookVideo，至少一组开启"原生多模态"时注册，销毁时注销）</summary>
+    XmlHandler? registeredMultimodalHandler;
+
     /// <summary>思考请求记事本：XmlFunctionCaller/QChat/音频监听等框架模块通过 ILanguageModel.GetThinkingRequester()
     /// 在此租用/归还"需要思考"的标记。智能思考切换开启后，本模块据其 IsOccupied 决定走思考还是非思考模式。</summary>
     readonly OccupationNotepad thinkingRequester = new();
@@ -72,6 +75,57 @@ public class LanguageModelRouter(
 
     /// <summary>暴露思考请求记事本，供框架生态（XmlFunctionCaller 等）请求"本次应使用思考模式"</summary>
     public OccupationNotepad GetThinkingRequester() => thinkingRequester;
+
+    // ──── IMultimodalExecutor（原生多模态，对齐官方 OpenAI 语言模型）────
+
+    /// <summary>默认允许所有内容类型使用保留模式（媒体常驻上下文；与官方默认行为一致，空 = 全部允许保留）。</summary>
+    bool IMultimodalExecutor.IsPersistentAllowed(string registrationKey) => true;
+
+    bool IMultimodalExecutor.CanUseNativeMultimodalNow() => IsCurrentGroupNativeMultimodal();
+
+    /// <summary>当前即将服务请求的渠道组是否开启了"原生多模态"（= FallbackHandler 的起始组）。</summary>
+    internal bool IsCurrentGroupNativeMultimodal()
+    {
+        var cfg = Configuration;
+        if (cfg == null) return false;
+        cfg.EnsureGroups();
+        var groups = BuildFallbackGroups(cfg);
+        if (groups.Count == 0) return false;
+
+        int startIdx = GetForcedDisplayIndex(cfg); // FallbackHandler 起始组（显示索引）；-1 = 主组
+        if (startIdx < 0 || startIdx >= groups.Count)
+            startIdx = 0;
+        return groups[startIdx].EnableNativeMultimodal;
+    }
+
+    /// <summary>临时式补全：复用主线程，在锁内临时追加媒体为最新用户消息，调用 ChatStreamingAsync 后移除临时消息，不污染主历史。</summary>
+    async Task<string> IMultimodalExecutor.CompleteWithContentAsync(
+        ChatBot chatBot, KernelContent content, CancellationToken cancellationToken)
+    {
+        string result = "";
+        Exception? error = null;
+        await chatBot.EditChatHistoryAsync(async thread =>
+        {
+            ChatHistory history = thread.ChatHistory;
+            int startIndex = history.Count;
+            history.AddUserMessage([content, new TextContent("已上传")]);
+            try
+            {
+                result = await ChatStreamingAsync(thread,
+                    exceptionThrow: e => error = e,
+                    cancellationToken: cancellationToken);
+            }
+            finally
+            {
+                history.RemoveRange(startIndex, history.Count - startIndex);
+            }
+        }, "多模态分析");
+
+        // ChatStreamingAsync 会吞掉异常（通过回调），这里透传，避免调用方收到静默的空结果
+        if (error != null)
+            throw error;
+        return "AI分析结果如下：" + result;
+    }
 
     protected override async Task OnAwake()
     {
@@ -98,6 +152,24 @@ public class LanguageModelRouter(
 
         var cfg = Configuration;
         var groups = cfg != null ? BuildFallbackGroups(cfg) : new List<FallbackGroup>();
+
+        // 原生多模态（对齐官方 OpenAI 语言模型）：至少一组开启"原生多模态"时，注册 AI 的
+        // LookImage/LookFile/LookVideo 查看函数。Look 系函数文档由 XmlFunctionCaller 常驻注入。
+        if (cfg != null && cfg.HasNativeMultimodalGroup())
+        {
+            try
+            {
+                XmlHandler multimodalHandler = AlifeContentRegistry.BuildHandler(ChatBot, cfg, this);
+                functionService.RegisterHandler(multimodalHandler, DocumentMode.Explicit, DestroyCancellationToken);
+                registeredMultimodalHandler = multimodalHandler;
+            }
+            catch (Exception ex)
+            {
+                // 多模态内容类型注册失败不应拖垮插件启动（面板仍需可打开）
+                Console.WriteLine($"[灵枢] 原生多模态函数注册失败：{ex.Message}");
+            }
+        }
+
         var sb = new StringBuilder();
 
         sb.AppendLine("## 语言模型渠道切换能力");
@@ -117,6 +189,11 @@ public class LanguageModelRouter(
                 sb.AppendLine($"- 第{slot + 1}组{main}{label}：{groups[i].Endpoint} → {groups[i].ModelId}");
             }
         }
+        if (cfg != null && cfg.HasNativeMultimodalGroup())
+        {
+            sb.AppendLine();
+            sb.AppendLine("其中部分渠道组开启了「原生多模态」。当需要分析图片/文件/视频时，你可以使用 LookImage / LookFile / LookVideo 函数查看这些内容。");
+        }
         sb.AppendLine();
 
         interactor.Prompt(sb.ToString());
@@ -129,6 +206,11 @@ public class LanguageModelRouter(
         {
             functionService?.UnregisterHandler(registeredHandler);
             registeredHandler = null;
+        }
+        if (registeredMultimodalHandler != null)
+        {
+            functionService?.UnregisterHandler(registeredMultimodalHandler);
+            registeredMultimodalHandler = null;
         }
         return Task.CompletedTask;
     }
@@ -308,8 +390,10 @@ public class LanguageModelRouter(
                 throw new Exception("灵枢：未配置任何渠道组，请检查插件配置");
             FallbackGroup primary = groups[0];
 
-            // 组装 OpenAI 兼容请求体；FallbackHandler 在管道内按当前组重写 model / reasoning_effort / extraBody 与目标地址
-            // 同时记录最后一条 user 消息，供"自定义关键词触发思考"匹配
+            // 组装 OpenAI 兼容请求体；FallbackHandler 在管道内按当前组重写 model / reasoning_effort / extraBody 与目标地址，
+            // 并按目标组的"原生多模态"开关决定保留还是剥离消息中的媒体 parts（对齐官方 OpenAI 原生多模态写法）。
+            // 同时记录最后一条 user 消息，供"自定义关键词触发思考"匹配。
+            bool allowNative = groups.Any(g => g.EnableNativeMultimodal);
             var messages = new JsonArray();
             currentUserMessage = null;
             foreach (var msg in chatHistoryAgentThread.ChatHistory)
@@ -325,10 +409,29 @@ public class LanguageModelRouter(
                 if (role == "user")
                     currentUserMessage = content;
 
+                // 只要存在开启"原生多模态"的组，就把携带媒体（图片/文件/视频）的 user 消息序列化为
+                // OpenAI 原生 content parts 数组；纯文本消息仍走字符串通道保持最大兼容。
+                // FallbackHandler 在每次尝试按当前组的开关统一重写，保证关闭多模态的组收不到媒体、开启的组能收到。
+                JsonNode? nodeContent = null;
+                if (allowNative && role == "user")
+                {
+                    JsonArray? mediaContent = NativeMultimodalProtocol.TrySerializeWithMedia(msg);
+                    if (mediaContent != null)
+                        nodeContent = mediaContent;
+                }
+                if (nodeContent == null)
+                {
+                    // 纯文本回退：历史中保留过媒体但当前组未开原生多模态时，给出 [图片]/[文件]/[视频] 占位，
+                    // 而不是把 ImageContent 之类的内部类型名（或空串）发给上游
+                    nodeContent = (role == "user"
+                        ? NativeMultimodalProtocol.MediaTextPlaceholder(msg, content)
+                        : null) ?? content ?? "";
+                }
+
                 var entry = new JsonObject
                 {
                     ["role"] = role,
-                    ["content"] = content ?? ""
+                    ["content"] = nodeContent
                 };
                 messages.Add(entry);
             }
@@ -909,7 +1012,8 @@ public class LanguageModelRouter(
                 ParseExtraHeaders(ch.ExtraHeaders),
                 ch.ReasoningEffort,
                 ParseExtraBody(ch.ExtraBody),
-                ParseExtraBody(ch.ExtraBodyNotThinking)));
+                ParseExtraBody(ch.ExtraBodyNotThinking),
+                ch.EnableNativeMultimodal));
         }
 
         return groups;

@@ -18,6 +18,13 @@ public class GroupChannel
     public string? ExtraBody { get; set; }
     public string? ExtraBodyNotThinking { get; set; } // 非思考模式请求体（对齐官方 extraBodyNotThinking，默认 {"thinking":{"type":"disabled"}}）
 
+    // === 原生多模态（对齐官方 OpenAI 语言模型多模态支持）===
+    // 开启后本组视为支持 OpenAI 兼容原生多模态协议：对话中的图片/文件/视频等媒体内容将按
+    // 原生 content parts（image_url / file / video_url）随消息发送给模型（模型真正"看"得到），
+    // 同时向 AI 开放 LookImage / LookFile / LookVideo 查看函数（注册需在开启后重载一次插件）。
+    // 纯文本模型（如 deepseek-chat）请保持关闭，避免把图片塞给不支持多模态的上游。
+    public bool EnableNativeMultimodal { get; set; } = false;
+
     /// <summary>是否具备可用渠道（Endpoint 与 ApiKey 均非空）</summary>
     public bool IsConfigured => !string.IsNullOrWhiteSpace(Endpoint) && !string.IsNullOrWhiteSpace(ApiKey);
 }
@@ -119,6 +126,14 @@ public class LanguageModelRouterConfig
             ForcedGroupIndex = -1;
 
         EnsureApiKeysProtected();
+    }
+
+    /// <summary>是否存在至少一组开启了"原生多模态"的已配置渠道（Look 系函数注册与原生 parts 序列化的总开关）。</summary>
+    public bool HasNativeMultimodalGroup()
+    {
+        if (Groups == null || Groups.Count == 0)
+            return false;
+        return Groups.Any(ch => ch.IsConfigured && ch.EnableNativeMultimodal);
     }
 
     bool HasLegacyConfig()

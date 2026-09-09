@@ -123,7 +123,7 @@ public class FallbackHandler : DelegatingHandler
             req.RequestUri = BuildNewUri(request.RequestUri!, group.Endpoint.AbsoluteUri);
             if (req.Headers.Authorization != null)
                 req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", group.ApiKey);
-            await RewriteRequestBody(req, group.ModelId, group.ReasoningEffort, group.ExtraBody, group.ExtraBodyNotThinking, thinkingMode);
+            await RewriteRequestBody(req, group.ModelId, group.ReasoningEffort, group.ExtraBody, group.ExtraBodyNotThinking, thinkingMode, group.EnableNativeMultimodal);
             if (group.ExtraHeaders != null)
             {
                 foreach (var header in group.ExtraHeaders)
@@ -322,7 +322,7 @@ public class FallbackHandler : DelegatingHandler
         return clone;
     }
 
-    static async Task RewriteRequestBody(HttpRequestMessage req, string newModelId, string? reasoningEffort = null, IReadOnlyDictionary<string, object?>? extraBody = null, IReadOnlyDictionary<string, object?>? extraBodyNotThinking = null, bool thinkingMode = true)
+    static async Task RewriteRequestBody(HttpRequestMessage req, string newModelId, string? reasoningEffort = null, IReadOnlyDictionary<string, object?>? extraBody = null, IReadOnlyDictionary<string, object?>? extraBodyNotThinking = null, bool thinkingMode = true, bool nativeMultimodal = false)
     {
         if (req.Content == null) return;
         try
@@ -330,6 +330,11 @@ public class FallbackHandler : DelegatingHandler
             byte[] body = await req.Content.ReadAsByteArrayAsync();
             JObject obj = JObject.Parse(Encoding.UTF8.GetString(body));
             obj["model"] = newModelId;
+
+            // 原生多模态剥离：本组未开启时，把消息中的 content parts（image_url/file/video_url 等）统一
+            // 收敛为纯文本（仅拼接 text part）。开启时保留原生 parts，让模型真正"看到"媒体。
+            if (nativeMultimodal == false)
+                NormalizeMessagesToText(obj);
 
             if (thinkingMode)
             {
@@ -404,6 +409,56 @@ public class FallbackHandler : DelegatingHandler
         {
             Console.WriteLine($"[灵枢] 请求体重写失败（按原请求发送）: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// 原生多模态剥离：目标渠道组未开启"原生多模态"时，把 messages 中 content 为数组（content parts）的
+    /// 消息收敛为纯文本字符串（仅拼接 text 部分，丢弃 image_url/file/video_url 等媒体）。
+    /// 纯文本字符串消息原样保留，幂等操作。
+    /// </summary>
+    static void NormalizeMessagesToText(JObject obj)
+    {
+        if (obj["messages"] is not JArray messages)
+            return;
+
+        foreach (JToken? msgToken in messages)
+        {
+            if (msgToken is not JObject msg || msg["content"] is not JArray parts)
+                continue;
+
+            var sb = new StringBuilder();
+            string? firstMediaType = null;
+            foreach (JToken? partToken in parts)
+            {
+                if (partToken is not JObject part)
+                    continue;
+                if (string.Equals(part["type"]?.Value<string>(), "text", StringComparison.OrdinalIgnoreCase)
+                    && part["text"] is JValue textValue
+                    && textValue.Value is string text)
+                {
+                    sb.Append(text);
+                    continue;
+                }
+                // 记录媒体类型：仅在整条消息没有任何 text 部分时用于生成占位
+                if (firstMediaType == null && part["type"] is JValue typeValue && typeValue.Value is string mediaType)
+                    firstMediaType = mediaType;
+            }
+            if (sb.Length == 0 && firstMediaType != null)
+                sb.Append(MediaPlaceholder(firstMediaType)); // 纯媒体消息兜底，避免空 content 报错
+            msg["content"] = sb.ToString();
+        }
+    }
+
+    /// <summary>媒体类型占位文本（仅在消息没有任何 text 部分时使用）</summary>
+    static string MediaPlaceholder(string? type)
+    {
+        return type?.ToLowerInvariant() switch
+        {
+            "image_url" => "[图片]",
+            "file" => "[文件]",
+            "video_url" => "[视频]",
+            _ => "（媒体内容）"
+        };
     }
 
     /// <summary>
@@ -548,4 +603,13 @@ public class FallbackHandler : DelegatingHandler
     }
 }
 
-public record FallbackGroup(int Slot, Uri Endpoint, string ModelId, string ApiKey, IReadOnlyDictionary<string, string>? ExtraHeaders = null, string? ReasoningEffort = null, IReadOnlyDictionary<string, object?>? ExtraBody = null, IReadOnlyDictionary<string, object?>? ExtraBodyNotThinking = null);
+public record FallbackGroup(
+    int Slot,
+    Uri Endpoint,
+    string ModelId,
+    string ApiKey,
+    IReadOnlyDictionary<string, string>? ExtraHeaders = null,
+    string? ReasoningEffort = null,
+    IReadOnlyDictionary<string, object?>? ExtraBody = null,
+    IReadOnlyDictionary<string, object?>? ExtraBodyNotThinking = null,
+    bool EnableNativeMultimodal = false); // 原生多模态：开启=本组请求保留媒体 content parts，关闭=剥离为纯文本
