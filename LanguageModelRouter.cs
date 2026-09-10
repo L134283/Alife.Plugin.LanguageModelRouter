@@ -57,7 +57,7 @@ public class LanguageModelRouter(
     /// <summary>本模块注册的 XmlHandler（热重载销毁时必须注销，避免旧 handler 在表中累积导致函数被重复执行）</summary>
     XmlHandler? registeredHandler;
 
-    /// <summary>原生多模态输入 XmlHandler（LookImage/LookFile/LookVideo，至少一组开启"原生多模态"时注册，销毁时注销）</summary>
+    /// <summary>原生多模态输入 XmlHandler（LoadImage/LoadFile/LoadVideo，至少一组开启"原生多模态"时注册，销毁时注销）</summary>
     XmlHandler? registeredMultimodalHandler;
 
     /// <summary>思考请求记事本：XmlFunctionCaller/QChat/音频监听等框架模块通过 ILanguageModel.GetThinkingRequester()
@@ -108,7 +108,7 @@ public class LanguageModelRouter(
         {
             ChatHistory history = thread.ChatHistory;
             int startIndex = history.Count;
-            history.AddUserMessage([content, new TextContent("已上传")]);
+            history.AddUserMessage([content, new TextContent("已临时上传，请立即完整分析内容。稍后这次对话将被删除，你的回复将作为分析结果返回。")]);
             try
             {
                 result = await ChatStreamingAsync(thread,
@@ -124,7 +124,7 @@ public class LanguageModelRouter(
         // ChatStreamingAsync 会吞掉异常（通过回调），这里透传，避免调用方收到静默的空结果
         if (error != null)
             throw error;
-        return "AI分析结果如下：" + result;
+        return "分析结果如下：" + result;
     }
 
     protected override async Task OnAwake()
@@ -154,7 +154,7 @@ public class LanguageModelRouter(
         var groups = cfg != null ? BuildFallbackGroups(cfg) : new List<FallbackGroup>();
 
         // 原生多模态（对齐官方 OpenAI 语言模型）：至少一组开启"原生多模态"时，注册 AI 的
-        // LookImage/LookFile/LookVideo 查看函数。Look 系函数文档由 XmlFunctionCaller 常驻注入。
+        // LoadImage/LoadFile/LoadVideo 查看函数。Load 系函数文档由 XmlFunctionCaller 常驻注入。
         if (cfg != null && cfg.HasNativeMultimodalGroup())
         {
             try
@@ -192,7 +192,7 @@ public class LanguageModelRouter(
         if (cfg != null && cfg.HasNativeMultimodalGroup())
         {
             sb.AppendLine();
-            sb.AppendLine("其中部分渠道组开启了「原生多模态」。当需要分析图片/文件/视频时，你可以使用 LookImage / LookFile / LookVideo 函数查看这些内容。");
+            sb.AppendLine("其中部分渠道组开启了「原生多模态」。当需要分析图片/文件/视频时，你可以使用 LoadImage / LoadFile / LoadVideo 函数查看这些内容。");
         }
         sb.AppendLine();
 
@@ -1011,6 +1011,7 @@ public class LanguageModelRouter(
                 LanguageModelRouterConfig.UnprotectSecret(ch.ApiKey),
                 ParseExtraHeaders(ch.ExtraHeaders),
                 ch.ReasoningEffort,
+                ch.Temperature,
                 ParseExtraBody(ch.ExtraBody),
                 ParseExtraBody(ch.ExtraBodyNotThinking),
                 ch.EnableNativeMultimodal));

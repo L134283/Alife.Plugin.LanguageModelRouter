@@ -1067,12 +1067,6 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
 .ls-group-card:hover {
   border-color: var(--ls-border);
 }
-.ls-group-card[draggable=""true""] {
-  cursor: grab;
-}
-.ls-group-card[draggable=""true""]:active {
-  cursor: grabbing;
-}
 .ls-group-card-dragging {
   opacity: 0.45;
   border-color: var(--ls-gold-dim);
@@ -1084,18 +1078,73 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
   gap: 8px;
   margin-bottom: 10px;
 }
+/* 拖动排序手柄：卡片内唯一可拖动元素（醒目小按钮），按住它才发起拖动，
+   避免在输入框内按下鼠标选择文本时被浏览器误判为拖动卡片 */
 .ls-drag-handle {
-  color: var(--ls-gold);
-  font-size: 15px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  border: 1px solid var(--ls-gold-dim);
+  background: linear-gradient(180deg, rgba(255,240,176,0.22), rgba(90,74,40,0.42));
+  color: var(--ls-gold-bright);
+  font-size: 14px;
   line-height: 1;
   cursor: grab;
   user-select: none;
-  opacity: 0.85;
-  transition: opacity .2s, transform .2s;
+  -webkit-user-select: none;
+  box-shadow: 0 0 10px rgba(232,198,90,0.18), inset 0 1px 0 rgba(255,240,176,0.28);
+  transition: border-color .2s, box-shadow .2s, transform .2s, color .2s, background .2s;
 }
-.ls-group-card:hover .ls-drag-handle {
-  opacity: 1;
-  transform: translateX(1px);
+.ls-drag-handle:hover {
+  border-color: var(--ls-gold-bright);
+  color: #fff8d0;
+  background: linear-gradient(180deg, rgba(255,240,176,0.34), rgba(120,96,48,0.45));
+  box-shadow: 0 0 18px rgba(255,240,176,0.42), inset 0 1px 0 rgba(255,240,176,0.4);
+  transform: translateY(-1px);
+}
+.ls-drag-handle:active {
+  cursor: grabbing;
+  transform: translateY(0) scale(0.94);
+  box-shadow: 0 0 22px rgba(255,240,176,0.5), inset 0 1px 0 rgba(255,240,176,0.4);
+}
+/* 上移/下移按钮：与拖动等价的排序入口，供不便拖动时使用 */
+.ls-move-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border-radius: 6px;
+  border: 1px solid var(--ls-border-soft);
+  background: rgba(40,32,16,0.5);
+  color: var(--ls-text-dim);
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  font-family: inherit;
+  transition: border-color .2s, color .2s, background .2s, box-shadow .2s, transform .2s;
+}
+.ls-move-btn:hover:not(:disabled) {
+  border-color: var(--ls-gold-dim);
+  color: var(--ls-gold-bright);
+  background: linear-gradient(180deg, rgba(255,240,176,0.24), rgba(90,74,40,0.42));
+  box-shadow: 0 0 12px rgba(232,198,90,0.32);
+  transform: translateY(-1px);
+}
+.ls-move-btn:active:not(:disabled) {
+  transform: translateY(0) scale(0.94);
+}
+.ls-move-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
 }
 .ls-group-card-title {
   flex: 1;
@@ -1268,93 +1317,20 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
 
         b.OpenElement(_seq++, "div");
         b.AddAttribute(_seq++, "class", "ls-alert-body");
-        AlertLine(b, "✧", "替换框架内置 OpenAI 语言模型，支持多路文本模型自动容灾切换、拖动排序与自由增删渠道组", false);
+        AlertLine(b, "✧", "替换框架内置 OpenAI 语言模型，支持多路文本模型自动容灾切换、拖动/按钮排序与自由增删渠道组", false);
         AlertLine(b, "✧", "遇到 HTTP 429/402/5xx 错误或响应体包含指定关键字时，自动切换到下一组渠道重试", false);
         AlertLine(b, "✧", "同时支持 reasoning_content 等 SSE 思维链流的自动转换", false);
-        AlertLine(b, "✧", "原生多模态（对齐官方 OpenAI）：每组可独立开启，图片/文件/视频以原生 content parts 发送，AI 可用 LookImage/LookFile/LookVideo 查看", false);
+        AlertLine(b, "✧", "原生多模态（对齐官方 OpenAI）：每组可独立开启，图片/文件/视频以原生 content parts 发送，AI 可用 LoadImage/LoadFile/LoadVideo 查看", false);
         AlertLine(b, "◈", "使用前请在角色配置中禁用 OpenAILanguageModel，启用本模块", true);
         b.CloseElement();
 
         b.CloseElement();
 
-        // === 安全设置（API Key 加密开关）===
-        b.OpenElement(_seq++, "div");
-        b.AddAttribute(_seq++, "class", "ls-section");
-        SectionTitle(b, "安全设置");
-        AddEncryptionToggle(b);
-        AddSslToggle(b);
-        b.CloseElement();
-
-        // === 渠道组（可增删，拖动排序，最上方为主组）===
-        b.OpenElement(_seq++, "div");
-        b.AddAttribute(_seq++, "class", "ls-groups");
-        AddHint(b, "拖动卡片调整渠道顺序：拖到最上方的组即为主渠道（优先使用），容灾按从上到下的顺序依次尝试。可点击「添加渠道」新增组、展开卡片后删除组。");
         Configuration.EnsureGroups();
         EnsureDetectArrays();
         int[] order = LanguageModelRouter.GetGroupOrder(Configuration);
-        for (int di = 0; di < order.Length; di++)
-            GroupCard(b, di);
 
-        // 添加渠道组
-        b.OpenElement(_seq++, "div");
-        b.AddAttribute(_seq++, "class", "ls-add-row");
-        var canAdd = Configuration.Groups.Count < LanguageModelRouterConfig.MaxGroups;
-        b.OpenElement(_seq++, "button");
-        b.AddAttribute(_seq++, "type", "button");
-        b.AddAttribute(_seq++, "class", "ls-btn-add");
-        if (!canAdd)
-            b.AddAttribute(_seq++, "disabled", true);
-        b.AddAttribute(_seq++, "onclick", EventCallback.Factory.Create(this, () =>
-        {
-            Configuration.AddGroup();
-            EnsureDetectArrays();
-            StateHasChanged();
-        }));
-        b.AddContent(_seq++, canAdd
-            ? $"+ 添加渠道组（当前 {Configuration.Groups.Count}/{LanguageModelRouterConfig.MaxGroups}）"
-            : $"已达上限 {LanguageModelRouterConfig.MaxGroups} 组");
-        b.CloseElement();
-        b.CloseElement();
-        b.CloseElement();
-
-        // 圣印分隔
-        SealDivider(b);
-
-
-        // === 容灾设置 ===
-        b.OpenElement(_seq++, "div");
-        b.AddAttribute(_seq++, "class", "ls-section");
-        SectionTitle(b, "容灾设置");
-
-        AutoFailoverToggle(b);
-
-        AddInput(b, "错误关键字（逗号分隔）", Configuration.ErrorKeywords ?? "", v => Configuration.ErrorKeywords = string.IsNullOrEmpty(v) ? null : v);
-        AddHint(b, "响应体中包含这些关键字时触发切换，如 rate_limit,insufficient_quota,billing_hard_limit\n留空则仅按 HTTP 状态码判断；内容安全检查类错误（如 data_inspection_failed、content_filter）已内置自动容灾");
-
-        AddInput(b, "重试间隔（毫秒）", Configuration.RetryDelayMs.ToString(), v =>
-        {
-            if (int.TryParse(v, out var n))
-                Configuration.RetryDelayMs = Math.Clamp(n, 0, 30000);
-        });
-        AddHint(b, "切换到下一组前的等待时间，默认 1000ms，设为 0 则立即重试");
-
-        AddInput(b, "请求超时（毫秒）", Configuration.RequestTimeoutMs.ToString(), v =>
-        {
-            if (int.TryParse(v, out var n))
-                Configuration.RequestTimeoutMs = Math.Clamp(n, 1000, 300000);
-        });
-        AddHint(b, "单次渠道请求超时上限，默认 30000ms。渠道挂起/无响应时按此时间快速容灾切换，避免长时间卡住；设为 0 则保留 100 秒兜底");
-
-        AddInput(b, "流空闲超时（毫秒）", Configuration.StreamIdleTimeoutMs.ToString(), v =>
-        {
-            if (int.TryParse(v, out var n))
-                Configuration.StreamIdleTimeoutMs = Math.Clamp(n, 0, 600000);
-        });
-        AddHint(b, "已建立连接但长时间未收到任何数据（含 keep-alive）视为异常，默认 0=关闭。防止渠道返回 200 后流挂起导致永久等待；模型思考较久时可能误判，请酌情设置");
-
-        b.CloseElement();
-
-        // === 手动切换 ===
+        // === 手动切换（置顶：最常用的操作）===
         b.OpenElement(_seq++, "div");
         b.AddAttribute(_seq++, "class", "ls-section");
         SectionTitle(b, "手动切换");
@@ -1388,11 +1364,60 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
         AddHint(b, "点击按钮切换渠道，也可在聊天中告诉桌宠「切换到第二组」或按名称「切换到 deepseek」，AI 会自动切换。配置保存后即刻生效，无需重新加载模块。");
         b.CloseElement();
 
+        // === 渠道组（可增删，拖动/按钮排序，最上方为主组）===
+        b.OpenElement(_seq++, "div");
+        b.AddAttribute(_seq++, "class", "ls-groups");
+        AddHint(b, "调整渠道顺序：按住每组卡片左上角的「⠿」手柄拖动，或点击卡片右侧的「↑ / ↓」按钮把该组前移/后移。排在最上方的组即为主渠道（优先使用），容灾按从上到下的顺序依次尝试。可点击「添加渠道」新增组、展开卡片后删除组。");
+        for (int di = 0; di < order.Length; di++)
+            GroupCard(b, di);
+
+        // 添加渠道组
+        b.OpenElement(_seq++, "div");
+        b.AddAttribute(_seq++, "class", "ls-add-row");
+        var canAdd = Configuration.Groups.Count < LanguageModelRouterConfig.MaxGroups;
+        b.OpenElement(_seq++, "button");
+        b.AddAttribute(_seq++, "type", "button");
+        b.AddAttribute(_seq++, "class", "ls-btn-add");
+        if (!canAdd)
+            b.AddAttribute(_seq++, "disabled", true);
+        b.AddAttribute(_seq++, "onclick", EventCallback.Factory.Create(this, () =>
+        {
+            Configuration.AddGroup();
+            EnsureDetectArrays();
+            StateHasChanged();
+        }));
+        b.AddContent(_seq++, canAdd
+            ? $"+ 添加渠道组（当前 {Configuration.Groups.Count}/{LanguageModelRouterConfig.MaxGroups}）"
+            : $"已达上限 {LanguageModelRouterConfig.MaxGroups} 组");
+        b.CloseElement();
+        b.CloseElement();
+        b.CloseElement();
+
+        // 圣印分隔
+        SealDivider(b);
+
+        // === 容灾设置 ===
+        b.OpenElement(_seq++, "div");
+        b.AddAttribute(_seq++, "class", "ls-section");
+        SectionTitle(b, "容灾设置");
+        AutoFailoverToggle(b);
+        AddThinkingAdvanced(b);
+        AddDisasterAdvanced(b);
+        b.CloseElement();
+
+        // === 安全设置（低频，置于底部）===
+        b.OpenElement(_seq++, "div");
+        b.AddAttribute(_seq++, "class", "ls-section");
+        SectionTitle(b, "安全设置");
+        AddEncryptionToggle(b);
+        AddSslToggle(b);
+        b.CloseElement();
+
         // === 使用说明 ===
         b.OpenElement(_seq++, "div");
         b.AddAttribute(_seq++, "class", "ls-section");
         SectionTitle(b, "使用说明");
-        AddHint(b, "1. 在角色配置中禁用「OpenAI语言模型」，启用「灵枢 - OpenAI语言模型报错自动切换」\n2. 拖动渠道卡片可调整顺序：拖到最上方的组即为主渠道，必须填写 Endpoint、Model ID 和 API Key\n3. 其余组为备用渠道，遇到 429/402/5xx 错误时按从上到下顺序自动切换\n4. 组名称可用于 AI 识别渠道，如对桌宠说「切换到 deepseek」即可对应切换\n5. 可点击「添加渠道组」自由新增，展开备用组卡片后点「删除」移除（主组不可删，至少保留 1 组）\n6. 配置保存后即刻生效，无需重新加载模块\n7. （可选）原生多模态：在支持多模态输入的模型组开启「原生多模态」（如图文模型 gpt-4o），图片等媒体将原生随对话发送，AI 可调用 LookImage/LookFile/LookVideo 查看；纯文本模型组请保持关闭。开启后需保存配置并重载一次本插件以完成 Look 系函数注册");
+        AddHint(b, "1. 在角色配置中禁用「OpenAI语言模型」，启用「灵枢 - OpenAI语言模型报错自动切换」\n2. 调整渠道顺序：拖动卡片左上角「⠿」手柄，或点击卡片右侧「↑/↓」按钮前移/后移；排最上方的组即为主渠道，必须填写 Endpoint、Model ID 和 API Key\n3. 其余组为备用渠道，遇到 429/402/5xx 错误时按从上到下顺序自动切换\n4. 组名称可用于 AI 识别渠道，如对桌宠说「切换到 deepseek」即可对应切换\n5. 可点击「添加渠道组」自由新增，展开备用组卡片后点「删除」移除（主组不可删，至少保留 1 组）\n6. 配置保存后即刻生效，无需重新加载模块\n7. （可选）原生多模态：在支持多模态输入的模型组开启「原生多模态」（如图文模型 gpt-4o），图片等媒体将原生随对话发送，AI 可调用 LoadImage/LoadFile/LoadVideo 查看；纯文本模型组请保持关闭。开启后需保存配置并重载一次本插件以完成 Load 系函数注册");
         b.CloseElement();
     }
 
@@ -1506,10 +1531,12 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
         AddToggleRow(b, $"nativeMultimodal_{g}", ch.EnableNativeMultimodal,
             v => ch.EnableNativeMultimodal = v,
             "原生多模态（开启后本组按 OpenAI 原生 content parts：image_url / file / video_url 把图片等媒体随对话发送给模型）");
-        AddHint(b, "仅供支持原生多模态输入的模型开启（如图文模型 gpt-4o 系列）。纯文本模型请保持关闭（默认），避免把媒体塞给不支持的上游。\n开启后：① 媒体消息即刻以原生格式随请求发送（无需重载）；② 同时向 AI 注册 LookImage / LookFile / LookVideo 查看函数（常驻文档，需保存配置后重载一次本插件生效）。");
+        AddHint(b, "仅供支持原生多模态输入的模型开启（如图文模型 gpt-4o 系列）。纯文本模型请保持关闭（默认），避免把媒体塞给不支持的上游。\n开启后：① 媒体消息即刻以原生格式随请求发送（无需重载）；② 同时向 AI 注册 LoadImage / LoadFile / LoadVideo 查看函数（常驻文档，需保存配置后重载一次本插件生效）。");
 
         AddInput(b, "Reasoning Effort", ch.ReasoningEffort ?? "", v => ch.ReasoningEffort = string.IsNullOrWhiteSpace(v) ? null : v);
         AddHint(b, "推理强度，如 low / medium / high，留空则不设置");
+        AddInput(b, "Temperature（采样温度）", FormatTemperature(ch.Temperature), v => ch.Temperature = ParseTemperature(v));
+        AddHint(b, "采样温度：越低越严谨、越高越发散（官方 OpenAI 语言模型默认 0.6）；留空则不发送该参数，使用服务端默认值。Extra Body 里同名字段会覆盖此项");
         AddInput(b, "Extra Headers (JSON)", ch.ExtraHeaders ?? "", v => ch.ExtraHeaders = string.IsNullOrWhiteSpace(v) ? null : v);
         AddHint(b, "额外请求头，JSON 格式，如 {\"X-Custom\":\"value\"}");
         AddInput(b, "Extra Body (JSON)", ch.ExtraBody ?? "", v => ch.ExtraBody = string.IsNullOrWhiteSpace(v) ? null : v);
@@ -1539,9 +1566,10 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
 
         b.OpenElement(_seq++, "div");
         b.AddAttribute(_seq++, "class", _dragSource == displayIndex ? "ls-group-card ls-group-card-dragging" : "ls-group-card");
-        b.AddAttribute(_seq++, "draggable", "true");
-        b.AddAttribute(_seq++, "ondragstart", EventCallback.Factory.Create<DragEventArgs>(this, e => _dragSource = displayIndex));
-        b.AddAttribute(_seq++, "ondragend", EventCallback.Factory.Create<DragEventArgs>(this, e => { _dragSource = null; StateHasChanged(); }));
+        // 卡片本身不可拖动：只有卡片头的拖拽手柄能发起拖动，
+        // 这样在输入框内按下鼠标拖动只会选择文本，不会被误判为拖动排序
+        b.AddAttribute(_seq++, "draggable", "false");
+        // 卡片整体仍作为放置目标（拖到最上方即成为主渠道）
         b.AddAttribute(_seq++, "ondragover", EventCallback.Factory.Create<DragEventArgs>(this, e => { }));
         b.AddEventPreventDefaultAttribute(_seq++, "ondragover", true);
         b.AddAttribute(_seq++, "ondrop", EventCallback.Factory.Create<DragEventArgs>(this, e => DropGroup(displayIndex)));
@@ -1551,8 +1579,13 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
         b.OpenElement(_seq++, "div");
         b.AddAttribute(_seq++, "class", "ls-group-card-head");
 
+        // 拖拽手柄（卡片内唯一可拖动元素）：按住此按钮才发起拖动排序
         b.OpenElement(_seq++, "span");
         b.AddAttribute(_seq++, "class", "ls-drag-handle");
+        b.AddAttribute(_seq++, "title", "按住拖动排序（拖到最上方即为主渠道）");
+        b.AddAttribute(_seq++, "draggable", "true");
+        b.AddAttribute(_seq++, "ondragstart", EventCallback.Factory.Create<DragEventArgs>(this, e => _dragSource = displayIndex));
+        b.AddAttribute(_seq++, "ondragend", EventCallback.Factory.Create<DragEventArgs>(this, e => { _dragSource = null; StateHasChanged(); }));
         b.AddContent(_seq++, "⠿");
         b.CloseElement();
 
@@ -1582,6 +1615,28 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
             b.AddContent(_seq++, "✦ 多模态");
             b.CloseElement();
         }
+
+        // 上移/下移按钮：与拖动等价的排序方式（往前一位 / 往后一位），首位禁用上移、末位禁用下移
+        int groupCount = Configuration!.Groups.Count;
+        b.OpenElement(_seq++, "button");
+        b.AddAttribute(_seq++, "type", "button");
+        b.AddAttribute(_seq++, "class", "ls-move-btn");
+        b.AddAttribute(_seq++, "title", "上移（更靠前，更优先使用）");
+        if (displayIndex <= 0)
+            b.AddAttribute(_seq++, "disabled", true);
+        b.AddAttribute(_seq++, "onclick", EventCallback.Factory.Create(this, () => MoveGroup(displayIndex, -1)));
+        b.AddContent(_seq++, "↑");
+        b.CloseElement();
+
+        b.OpenElement(_seq++, "button");
+        b.AddAttribute(_seq++, "type", "button");
+        b.AddAttribute(_seq++, "class", "ls-move-btn");
+        b.AddAttribute(_seq++, "title", "下移（更靠后）");
+        if (displayIndex >= groupCount - 1)
+            b.AddAttribute(_seq++, "disabled", true);
+        b.AddAttribute(_seq++, "onclick", EventCallback.Factory.Create(this, () => MoveGroup(displayIndex, 1)));
+        b.AddContent(_seq++, "↓");
+        b.CloseElement();
         b.CloseElement();
 
         // 卡片内容：主组与备用组均使用可折叠卡片（主组默认展开，备用组可删除）
@@ -1601,7 +1656,7 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
         b.CloseElement();
     }
 
-    /// <summary>拖放：交换两组的显示顺序（拖到最上方即成为主组），同时修正强制锁定索引</summary>
+    /// <summary>拖放：交换两组的显示顺序（拖到最上方即成为主组）</summary>
     void DropGroup(int targetDisplayIndex)
     {
         if (_dragSource == null || _dragSource.Value == targetDisplayIndex)
@@ -1610,20 +1665,38 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
             return;
         }
 
-        var groups = Configuration!.Groups;
         int src = _dragSource.Value;
-        (groups[src], groups[targetDisplayIndex]) = (groups[targetDisplayIndex], groups[src]);
-
-        // 拖动排序后强制锁定跟随原组移动
-        int forced = Configuration.ForcedGroupIndex;
-        if (forced == src)
-            Configuration.ForcedGroupIndex = targetDisplayIndex;
-        else if (forced == targetDisplayIndex)
-            Configuration.ForcedGroupIndex = src;
-
         _dragSource = null;
+        SwapGroups(src, targetDisplayIndex);
         EnsureDetectArrays();
         StateHasChanged();
+    }
+
+    /// <summary>按钮排序：把指定显示位置的组往前（delta=-1）或往后（delta=+1）移动一位</summary>
+    void MoveGroup(int displayIndex, int delta)
+    {
+        int target = displayIndex + delta;
+        var groups = Configuration!.Groups;
+        if (displayIndex < 0 || displayIndex >= groups.Count || target < 0 || target >= groups.Count)
+            return;
+
+        SwapGroups(displayIndex, target);
+        EnsureDetectArrays();
+        StateHasChanged();
+    }
+
+    /// <summary>交换两个显示位置的渠道组（拖动与上下移动按钮共用），并让强制锁定索引跟随原组移动</summary>
+    void SwapGroups(int src, int target)
+    {
+        var groups = Configuration!.Groups;
+        (groups[src], groups[target]) = (groups[target], groups[src]);
+
+        // 排序后强制锁定跟随原组移动
+        int forced = Configuration.ForcedGroupIndex;
+        if (forced == src)
+            Configuration.ForcedGroupIndex = target;
+        else if (forced == target)
+            Configuration.ForcedGroupIndex = src;
     }
 
     /// <summary>显示位置 → Groups 索引（显示位置即索引，列表顺序即顺序）</summary>
@@ -1883,7 +1956,11 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
         b.AddContent(_seq++, "智能思考/非思考切换（开启后默认非思考：回复更快、token 更省；AI 需调用工具等复杂任务时自动切回思考）");
         b.CloseElement();
         b.CloseElement();
+    }
 
+    /// <summary>思考相关的低频微调（收进"高级参数"折叠区）：忽略历史隐式功能占用 + 自定义思考触发关键词。</summary>
+    void AddThinkingAdvanced(RenderTreeBuilder b)
+    {
         // 忽略历史隐式功能占用
         b.OpenElement(_seq++, "div");
         b.AddAttribute(_seq++, "class", "ls-toggle-row");
@@ -1907,6 +1984,34 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
 
         AddInput(b, "思考触发关键词（逗号分隔）", Configuration.ThinkingTriggerKeywords ?? "", v => Configuration.ThinkingTriggerKeywords = string.IsNullOrWhiteSpace(v) ? null : v);
         AddHint(b, "用户消息命中任一关键词时强制走思考模式（即使默认非思考也临时切回），适合需要深度推理的场景，如：代码,数学,分析");
+    }
+
+    /// <summary>容灾低频参数（收进"高级参数"折叠区）：错误关键字、重试间隔、请求超时、流空闲超时。</summary>
+    void AddDisasterAdvanced(RenderTreeBuilder b)
+    {
+        AddInput(b, "错误关键字（逗号分隔）", Configuration.ErrorKeywords ?? "", v => Configuration.ErrorKeywords = string.IsNullOrEmpty(v) ? null : v);
+        AddHint(b, "响应体中包含这些关键字时触发切换，如 rate_limit,insufficient_quota,billing_hard_limit\n留空则仅按 HTTP 状态码判断；内容安全检查类错误（如 data_inspection_failed、content_filter）已内置自动容灾");
+
+        AddInput(b, "重试间隔（毫秒）", Configuration.RetryDelayMs.ToString(), v =>
+        {
+            if (int.TryParse(v, out var n))
+                Configuration.RetryDelayMs = Math.Clamp(n, 0, 30000);
+        });
+        AddHint(b, "切换到下一组前的等待时间，默认 1000ms，设为 0 则立即重试");
+
+        AddInput(b, "请求超时（毫秒）", Configuration.RequestTimeoutMs.ToString(), v =>
+        {
+            if (int.TryParse(v, out var n))
+                Configuration.RequestTimeoutMs = Math.Clamp(n, 1000, 300000);
+        });
+        AddHint(b, "单次渠道请求超时上限，默认 30000ms。渠道挂起/无响应时按此时间快速容灾切换，避免长时间卡住；设为 0 则保留 100 秒兜底");
+
+        AddInput(b, "流空闲超时（毫秒）", Configuration.StreamIdleTimeoutMs.ToString(), v =>
+        {
+            if (int.TryParse(v, out var n))
+                Configuration.StreamIdleTimeoutMs = Math.Clamp(n, 0, 600000);
+        });
+        AddHint(b, "已建立连接但长时间未收到任何数据（含 keep-alive）视为异常，默认 0=关闭。防止渠道返回 200 后流挂起导致永久等待；模型思考较久时可能误判，请酌情设置");
     }
 
     // ==================== Switch ====================
@@ -1954,6 +2059,18 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
         b.AddAttribute(_seq++, "class", "ls-section-title");
         b.AddContent(_seq++, text);
         b.CloseElement();
+    }
+
+    /// <summary>采样温度显示值：null 显示为空（=不发送该参数）；用不变文化格式化，避免小数分隔符随系统区域变化</summary>
+    static string FormatTemperature(double? value)
+        => value.HasValue ? value.Value.ToString(System.Globalization.CultureInfo.InvariantCulture) : "";
+
+    /// <summary>解析采样温度输入：留空或非法返回 null（=不发送该参数，使用服务端默认）</summary>
+    static double? ParseTemperature(string v)
+    {
+        if (string.IsNullOrWhiteSpace(v)) return null;
+        return double.TryParse(v.Trim(), System.Globalization.NumberStyles.Float,
+            System.Globalization.CultureInfo.InvariantCulture, out double t) ? t : null;
     }
 
     void AddHint(RenderTreeBuilder b, string text)

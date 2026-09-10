@@ -123,7 +123,7 @@ public class FallbackHandler : DelegatingHandler
             req.RequestUri = BuildNewUri(request.RequestUri!, group.Endpoint.AbsoluteUri);
             if (req.Headers.Authorization != null)
                 req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", group.ApiKey);
-            await RewriteRequestBody(req, group.ModelId, group.ReasoningEffort, group.ExtraBody, group.ExtraBodyNotThinking, thinkingMode, group.EnableNativeMultimodal);
+            await RewriteRequestBody(req, group.ModelId, group.ReasoningEffort, group.ExtraBody, group.ExtraBodyNotThinking, thinkingMode, group.EnableNativeMultimodal, group.Temperature);
             if (group.ExtraHeaders != null)
             {
                 foreach (var header in group.ExtraHeaders)
@@ -322,7 +322,7 @@ public class FallbackHandler : DelegatingHandler
         return clone;
     }
 
-    static async Task RewriteRequestBody(HttpRequestMessage req, string newModelId, string? reasoningEffort = null, IReadOnlyDictionary<string, object?>? extraBody = null, IReadOnlyDictionary<string, object?>? extraBodyNotThinking = null, bool thinkingMode = true, bool nativeMultimodal = false)
+    static async Task RewriteRequestBody(HttpRequestMessage req, string newModelId, string? reasoningEffort = null, IReadOnlyDictionary<string, object?>? extraBody = null, IReadOnlyDictionary<string, object?>? extraBodyNotThinking = null, bool thinkingMode = true, bool nativeMultimodal = false, double? temperature = null)
     {
         if (req.Content == null) return;
         try
@@ -330,6 +330,13 @@ public class FallbackHandler : DelegatingHandler
             byte[] body = await req.Content.ReadAsByteArrayAsync();
             JObject obj = JObject.Parse(Encoding.UTF8.GetString(body));
             obj["model"] = newModelId;
+
+            // 采样温度（对齐官方 temperature）：本组配置了才写入，未配置则移除、交由服务端默认值。
+            // 放在 ExtraBody 之前，ExtraBody 中的同名字段仍可覆盖本项。
+            if (temperature.HasValue)
+                obj["temperature"] = temperature.Value;
+            else
+                obj.Remove("temperature");
 
             // 原生多模态剥离：本组未开启时，把消息中的 content parts（image_url/file/video_url 等）统一
             // 收敛为纯文本（仅拼接 text part）。开启时保留原生 parts，让模型真正"看到"媒体。
@@ -610,6 +617,7 @@ public record FallbackGroup(
     string ApiKey,
     IReadOnlyDictionary<string, string>? ExtraHeaders = null,
     string? ReasoningEffort = null,
+    double? Temperature = null, // 采样温度：null=不发送该参数（服务端默认）；对齐官方 OpenAI 语言模型 temperature
     IReadOnlyDictionary<string, object?>? ExtraBody = null,
     IReadOnlyDictionary<string, object?>? ExtraBodyNotThinking = null,
     bool EnableNativeMultimodal = false); // 原生多模态：开启=本组请求保留媒体 content parts，关闭=剥离为纯文本

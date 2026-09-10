@@ -8,7 +8,7 @@ using Microsoft.SemanticKernel;
 
 namespace Alife.Plugin.LanguageModelRouter;
 
-/// <summary>文件内容：协议序列化为 <c>file</c>。AI 通过 <c>LookFile</c> 查看，用 keep 参数选择临时/保留。
+/// <summary>文件内容：协议序列化为 <c>file</c>。AI 通过 <c>LoadFile</c> 查看，用 temp 参数选择临时/保留。
 /// 写法对齐官方 Alife.Function.Language.OpenAI 插件的 FileUrlContentType。</summary>
 public sealed class FileUrlContent(Uri url) : KernelContent
 {
@@ -30,11 +30,11 @@ public sealed class FileUrlContentType : AlifeContentHandlerBase
     public override XmlFunction? CreateXmlFunction(ChatBot chatBot, LanguageModelRouterConfig config, IMultimodalExecutor executor)
     {
         return BuildXmlFunction(
-            "LookFile",
-            "一般仅支持部分文件类型，如PDF等常见文本文件。",
+            "LoadFile",
+            null,
             [
                 ("url", "可直链访问的网络地址", "String"),
-                ("keep", "是否常驻上下文以便连续分析，默认 true", "bool"),
+                ("temp", "临时分析并直接获取结果，默认false", "bool"),
             ],
             async (context, ct) => {
                 FileUrlContent file = new(RequireHttpUrl(context.Parameters["url"], "url"));
@@ -43,7 +43,7 @@ public sealed class FileUrlContentType : AlifeContentHandlerBase
                 {
                     if (executor.IsPersistentAllowed(RegistrationKey!) == false)
                     {
-                        chatBot.Poke("保留模式未授权，仅可使用 keep=false 临时查看。");
+                        chatBot.Poke("保留模式未授权，仅可使用 temp=true 临时查看。");
                         return;
                     }
                     await QueueContentAsync(chatBot, file, "将文件加入对话上下文");
@@ -52,7 +52,7 @@ public sealed class FileUrlContentType : AlifeContentHandlerBase
                 }
                 if (executor.CanUseNativeMultimodalNow() == false)
                 {
-                    chatBot.Poke("当前渠道组未开启「原生多模态」，无法临时查看文件。请在对应组的配置中开启，或改用 keep=true 加入上下文。");
+                    chatBot.Poke("当前渠道组未开启「原生多模态」，无法临时查看文件。请在对应组的配置中开启，或改用 temp=false 加入上下文。");
                     return;
                 }
                 try

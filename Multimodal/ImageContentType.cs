@@ -9,7 +9,7 @@ using Microsoft.SemanticKernel;
 
 namespace Alife.Plugin.LanguageModelRouter;
 
-/// <summary>图片内容：协议序列化为 <c>image_url</c>。AI 通过 <c>LookImage</c> 查看，用 keep 参数选择临时/保留。
+/// <summary>图片内容：协议序列化为 <c>image_url</c>。AI 通过 <c>LoadImage</c> 查看，用 temp 参数选择临时/保留。
 /// 写法对齐官方 Alife.Function.Language.OpenAI 插件的 ImageContentType。</summary>
 public sealed class ImageContentType : AlifeContentHandlerBase
 {
@@ -26,11 +26,11 @@ public sealed class ImageContentType : AlifeContentHandlerBase
     public override XmlFunction? CreateXmlFunction(ChatBot chatBot, LanguageModelRouterConfig config, IMultimodalExecutor executor)
     {
         return BuildXmlFunction(
-            "LookImage",
+            "LoadImage",
             null,
             [
                 ("path", "图片本机路径或 http(s) 地址", "String"),
-                ("keep", "是否常驻上下文以便连续分析，默认 true", "bool"),
+                ("temp", "临时分析并直接获取结果，默认false", "bool"),
             ],
             async (context, ct) => {
                 ImageContent image = await LoadImageAsync(context.Parameters["path"]);
@@ -40,7 +40,7 @@ public sealed class ImageContentType : AlifeContentHandlerBase
                     // 保留模式：媒体常驻上下文，后续请求由实际服务的渠道组按其"原生多模态"开关决定是否原生携带
                     if (executor.IsPersistentAllowed(RegistrationKey!) == false)
                     {
-                        chatBot.Poke("保留模式未授权，仅可使用 keep=false 临时查看。");
+                        chatBot.Poke("保留模式未授权，仅可使用 temp=true 临时查看。");
                         return;
                     }
                     await QueueContentAsync(chatBot, image, "将图片加入对话上下文");
@@ -50,7 +50,7 @@ public sealed class ImageContentType : AlifeContentHandlerBase
                 // 临时模式：单次补全必须由当前渠道组原生携带图片，否则模型看不到内容
                 if (executor.CanUseNativeMultimodalNow() == false)
                 {
-                    chatBot.Poke("当前渠道组未开启「原生多模态」，无法临时查看图片。请在对应组的配置中开启，或改用 keep=true 加入上下文。");
+                    chatBot.Poke("当前渠道组未开启「原生多模态」，无法临时查看图片。请在对应组的配置中开启，或改用 temp=false 加入上下文。");
                     return;
                 }
                 try
