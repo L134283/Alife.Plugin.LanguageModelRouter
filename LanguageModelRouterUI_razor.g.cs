@@ -1691,6 +1691,12 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
         var groups = Configuration!.Groups;
         (groups[src], groups[target]) = (groups[target], groups[src]);
 
+        // 探测结果跟随原组移动，避免排序后"第 N 组"的探测结果与实际组错位
+        if (src >= 0 && target >= 0 && src < _detectResults.Length && target < _detectResults.Length)
+            (_detectResults[src], _detectResults[target]) = (_detectResults[target], _detectResults[src]);
+        if (src >= 0 && target >= 0 && src < _detectedModels.Length && target < _detectedModels.Length)
+            (_detectedModels[src], _detectedModels[target]) = (_detectedModels[target], _detectedModels[src]);
+
         // 排序后强制锁定跟随原组移动
         int forced = Configuration.ForcedGroupIndex;
         if (forced == src)
@@ -2025,6 +2031,8 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
             return;
         }
         Configuration.ForcedGroupIndex = groupIndex;
+        // 立即把面板里的配置同步给运行中的模块并落盘：手动切换无需再点「保存配置」即生效、重启后仍保留
+        Module?.ApplyConfigAndSave(Configuration);
         LanguageModelRouter.OnGroupChanged?.Invoke();
         StateHasChanged();
     }

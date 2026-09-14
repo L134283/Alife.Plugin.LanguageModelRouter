@@ -58,6 +58,21 @@ public abstract class AlifeContentHandlerBase : IAlifeContentType
         return uri;
     }
 
+    /// <summary>
+    /// 按候选参数名依次读取（非空即返回），全部缺失返回 null。
+    /// 用于兼容历史/近义参数名（如 LoadVideo 旧版用 url、新版对齐官方改名 path），
+    /// 避免 AI 沿用旧参数名时报 "key not present" 之类的底层字典异常。
+    /// </summary>
+    protected static string? GetParameter(XmlContext context, params string[] names)
+    {
+        foreach (string name in names)
+        {
+            if (context.Parameters.TryGetValue(name, out string? value) && string.IsNullOrWhiteSpace(value) == false)
+                return value;
+        }
+        return null;
+    }
+
     /// <summary>构建一个参数化的 AI 可调用 XmlFunction。</summary>
     protected static XmlFunction BuildXmlFunction(
         string name,

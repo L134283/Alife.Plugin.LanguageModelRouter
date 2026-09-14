@@ -37,7 +37,14 @@ public sealed class FileUrlContentType : AlifeContentHandlerBase
                 ("temp", "临时分析并直接获取结果，默认false", "bool"),
             ],
             async (context, ct) => {
-                FileUrlContent file = new(RequireHttpUrl(context.Parameters["url"], "url"));
+                // 兼容近义参数名 path，避免 AI 误用时抛 key not present
+                string? url = GetParameter(context, "url", "path");
+                if (string.IsNullOrWhiteSpace(url))
+                {
+                    chatBot.Poke("请提供文件的可直链访问网络地址。");
+                    return;
+                }
+                FileUrlContent file = new(RequireHttpUrl(url, "url"));
                 bool persistent = IsPersistentRequested(context);
                 if (persistent)
                 {

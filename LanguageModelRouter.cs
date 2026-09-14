@@ -212,6 +212,10 @@ public class LanguageModelRouter(
             functionService?.UnregisterHandler(registeredMultimodalHandler);
             registeredMultimodalHandler = null;
         }
+        // 释放 HTTP 管道（HttpClient 会连带释放 FallbackHandler 与底层 SocketsHttpHandler 连接池）。
+        // 不释放的话，热重载/销毁旧实例时连接池会泄漏（官方 OpenAILanguageModel.OnDestroy 同样会 Dispose）。
+        try { httpClient?.Dispose(); } catch { }
+        httpClient = null;
         return Task.CompletedTask;
     }
 
@@ -234,6 +238,17 @@ public class LanguageModelRouter(
         {
             Console.WriteLine($"[灵枢] 配置保存失败：{ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// 供 UI 面板在「手动切换渠道」后立即应用并保存配置：把面板里的配置实例同步给运行中的模块并落盘，
+    /// 使手动切换无需再点一次框架的「保存配置」即生效、重启后仍保留（与 AI 调用 SwitchModelGroup 行为一致）。
+    /// 说明：框架面板编辑的是配置副本，点「保存配置」前不会回填到模块，故需此处显式同步。
+    /// </summary>
+    internal void ApplyConfigAndSave(LanguageModelRouterConfig config)
+    {
+        Configuration = config;
+        SaveConfig();
     }
 
     /// <summary>构建 HTTP 管道：SocketsHttpHandler → FallbackHandler → HttpClient（容灾、推理转换、按组重写均在管道内完成）</summary>

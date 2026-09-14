@@ -33,7 +33,14 @@ public sealed class ImageContentType : AlifeContentHandlerBase
                 ("temp", "临时分析并直接获取结果，默认false", "bool"),
             ],
             async (context, ct) => {
-                ImageContent image = await LoadImageAsync(context.Parameters["path"]);
+                // 兼容近义参数名 url，避免 AI 误用时抛 key not present
+                string? pathOrUrl = GetParameter(context, "path", "url");
+                if (string.IsNullOrWhiteSpace(pathOrUrl))
+                {
+                    chatBot.Poke("请提供图片的本机路径或可直链访问的网络地址。");
+                    return;
+                }
+                ImageContent image = await LoadImageAsync(pathOrUrl);
                 bool persistent = IsPersistentRequested(context);
                 if (persistent)
                 {
@@ -76,7 +83,7 @@ public sealed class ImageContentType : AlifeContentHandlerBase
         else
         {
             if (File.Exists(pathOrUrl) == false)
-                throw new FileNotFoundException("图片不存在", pathOrUrl);
+                throw new FileNotFoundException($"本地图片文件不存在：{pathOrUrl}。若为远端图片，请改传可直链访问的 http(s) 网络地址。", pathOrUrl);
 
             image = new ImageContent(File.ReadAllBytes(pathOrUrl), GetMimeType(pathOrUrl));
         }

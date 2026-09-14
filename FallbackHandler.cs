@@ -480,7 +480,18 @@ public class FallbackHandler : DelegatingHandler
         string path = basePath.EndsWith("/chat/completions", StringComparison.OrdinalIgnoreCase)
             ? basePath
             : basePath + "/chat/completions";
-        string query = originalUri.Query;
+
+        // 合并 Endpoint 自带的查询参数与原始请求的查询参数（都保留，用 & 连接）。
+        // 此前用 originalUri.Query 直接覆盖，会把 Endpoint 上的必要参数（如 ?api-version=xxx）丢掉
+        string endpointQuery = endpointUri.Query.TrimStart('?');
+        string originalQuery = originalUri.Query.TrimStart('?');
+        string query = (endpointQuery, originalQuery) switch
+        {
+            ("", "") => "",
+            ("", _) => originalQuery,
+            (_, "") => endpointQuery,
+            _ => endpointQuery + "&" + originalQuery
+        };
 
         var builder = new UriBuilder(endpointUri)
         {
@@ -588,9 +599,9 @@ public class FallbackHandler : DelegatingHandler
         public override bool CanRead => true;
         public override bool CanSeek => false;
         public override bool CanWrite => false;
-        // 底层是网络流不可 Seek，访问 Length 会抛 NotSupportedException；返回 0 保持健壮
+        // 底层是网络流不可 Seek，访问 Length/Position 会抛 NotSupportedException；均返回 0 保持健壮
         public override long Length => 0;
-        public override long Position { get => innerStream.Position; set => throw new NotSupportedException(); }
+        public override long Position { get => 0; set => throw new NotSupportedException(); }
         public override void Flush() => innerStream.Flush();
         public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException("请使用 ReadAsync");
         public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
