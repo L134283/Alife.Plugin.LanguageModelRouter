@@ -1533,6 +1533,12 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
             "原生多模态（开启后本组按 OpenAI 原生 content parts：image_url / file / video_url 把图片等媒体随对话发送给模型）");
         AddHint(b, "仅供支持原生多模态输入的模型开启（如图文模型 gpt-4o 系列）。纯文本模型请保持关闭（默认），避免把媒体塞给不支持的上游。\n开启后：① 媒体消息即刻以原生格式随请求发送（无需重载）；② 同时向 AI 注册 LoadImage / LoadFile / LoadVideo 查看函数（常驻文档，需保存配置后重载一次本插件生效）。");
 
+        // 智能思考/非思考切换（每组独立开关）
+        AddToggleRow(b, $"smartThinking_{g}", ch.SmartThinkingEnabled,
+            v => ch.SmartThinkingEnabled = v,
+            "智能思考/非思考切换（本组独立）：开启后本组默认非思考（回复更快、更省 token），AI 需调用工具等复杂任务时自动切回思考");
+        AddHint(b, "每组独立生效：开启的组走「默认非思考」策略，未开启的组恒思考（沿用本组自己的 Reasoning Effort / Extra Body）。「忽略历史隐式功能占用」「思考触发关键词」为全局设置，对所有开启本开关的组生效。");
+
         AddInput(b, "Reasoning Effort", ch.ReasoningEffort ?? "", v => ch.ReasoningEffort = string.IsNullOrWhiteSpace(v) ? null : v);
         AddHint(b, "推理强度，如 low / medium / high，留空则不设置");
         AddInput(b, "Temperature（采样温度）", FormatTemperature(ch.Temperature), v => ch.Temperature = ParseTemperature(v));
@@ -1942,26 +1948,6 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
         b.CloseElement();
         b.CloseElement();
 
-        // 智能思考/非思考切换
-        b.OpenElement(_seq++, "div");
-        b.AddAttribute(_seq++, "class", "ls-toggle-row");
-
-        b.OpenElement(_seq++, "input");
-        b.AddAttribute(_seq++, "type", "checkbox");
-        b.AddAttribute(_seq++, "id", "smartThinkingCheck");
-        b.AddAttribute(_seq++, "checked", Configuration.SmartThinkingEnabled);
-        b.AddAttribute(_seq++, "onchange", EventCallback.Factory.Create<ChangeEventArgs>(this, e =>
-        {
-            Configuration.SmartThinkingEnabled = e.Value is bool bv ? bv : !Configuration.SmartThinkingEnabled;
-            StateHasChanged();
-        }));
-        b.CloseElement();
-
-        b.OpenElement(_seq++, "label");
-        b.AddAttribute(_seq++, "for", "smartThinkingCheck");
-        b.AddContent(_seq++, "智能思考/非思考切换（开启后默认非思考：回复更快、token 更省；AI 需调用工具等复杂任务时自动切回思考）");
-        b.CloseElement();
-        b.CloseElement();
     }
 
     /// <summary>思考相关的低频微调（收进"高级参数"折叠区）：忽略历史隐式功能占用 + 自定义思考触发关键词。</summary>

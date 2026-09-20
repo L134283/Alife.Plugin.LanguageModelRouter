@@ -27,6 +27,11 @@ public class GroupChannel
     // 纯文本模型（如 deepseek-chat）请保持关闭，避免把图片塞给不支持多模态的上游。
     public bool EnableNativeMultimodal { get; set; } = false;
 
+    // === 智能思考/非思考切换（每组独立）===
+    // 开启后本组默认非思考：回复更快、token 更省；当 AI 需要调用工具、处理群消息、
+    // 主动监听等复杂任务时自动切回思考。需要稳定推理的组可保持关闭（默认恒思考）。
+    public bool SmartThinkingEnabled { get; set; } = false;
+
     /// <summary>是否具备可用渠道（Endpoint 与 ApiKey 均非空）</summary>
     public bool IsConfigured => !string.IsNullOrWhiteSpace(Endpoint) && !string.IsNullOrWhiteSpace(ApiKey);
 }
@@ -126,6 +131,15 @@ public class LanguageModelRouterConfig
         // 避免 UI 显示"强制锁定某组"但实际请求仍从主组开始的不一致
         if (ForcedGroupIndex >= Groups.Count || (ForcedGroupIndex >= 0 && !Groups[ForcedGroupIndex].IsConfigured))
             ForcedGroupIndex = -1;
+
+        // 迁移旧版全局"智能思考开关"（v4.7.2 及之前为全局配置）到各组：一次性分摊到所有组后复位全局标记。
+        // 幂等：迁移后全局标记为 false，后续调用不再触发。
+        if (SmartThinkingEnabled)
+        {
+            foreach (var channel in Groups)
+                channel.SmartThinkingEnabled = true;
+            SmartThinkingEnabled = false;
+        }
 
         EnsureApiKeysProtected();
     }

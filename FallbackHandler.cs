@@ -29,7 +29,7 @@ public class FallbackHandler : DelegatingHandler
     readonly Action<int>? onFailover;
     readonly Func<bool>? consumeTestFlag;
     readonly Func<bool> getShowThinkingChain;
-    readonly Func<bool> getThinkingMode;
+    readonly Func<FallbackGroup, bool> getThinkingMode;
     readonly Action<int>? onServed;
 
     static readonly string[] ReasoningKeys = {
@@ -67,7 +67,7 @@ public class FallbackHandler : DelegatingHandler
         Action<int>? onFailover = null,
         Func<bool>? consumeTestFlag = null,
         Func<bool>? getShowThinkingChain = null,
-        Func<bool>? getThinkingMode = null,
+        Func<FallbackGroup, bool>? getThinkingMode = null,
         Action<int>? onServed = null
     ) : base(innerHandler)
     {
@@ -80,7 +80,7 @@ public class FallbackHandler : DelegatingHandler
         this.onFailover = onFailover;
         this.consumeTestFlag = consumeTestFlag;
         this.getShowThinkingChain = getShowThinkingChain ?? (() => true);
-        this.getThinkingMode = getThinkingMode ?? (() => true);
+        this.getThinkingMode = getThinkingMode ?? (_ => true);
         this.onServed = onServed;
     }
 
@@ -98,7 +98,6 @@ public class FallbackHandler : DelegatingHandler
         bool autoEnabled = getAutoFailoverEnabled();
         var errorKeywords = getErrorKeywords();
         int retryDelayMs = getRetryDelayMs();
-        bool thinkingMode = getThinkingMode();
         int requestTimeoutMs = getRequestTimeoutMs();
         // 有效超时：<=0 视为关闭但保留 100s 兜底（等价旧 HttpClient 默认值）；>0 则下限 1s、上限 300s，
         // 保证单次尝试超时恒为唯一生效的超时，不会与 HttpClient 内置 100s 超时冲突
@@ -117,6 +116,8 @@ public class FallbackHandler : DelegatingHandler
         {
             int groupIdx = (startGroup + attempt) % groups.Count;
             var group = groups[groupIdx];
+            // 智能思考开关按组独立：每个尝试的组各自决定走思考还是非思考
+            bool thinkingMode = getThinkingMode(group);
 
             // 每次请求都按当前组重写目标与模型，拖动排序后无需重建内核即生效
             HttpRequestMessage req = await CloneRequestAsync(request);
@@ -631,4 +632,5 @@ public record FallbackGroup(
     double? Temperature = null, // 采样温度：null=不发送该参数（服务端默认）；对齐官方 OpenAI 语言模型 temperature
     IReadOnlyDictionary<string, object?>? ExtraBody = null,
     IReadOnlyDictionary<string, object?>? ExtraBodyNotThinking = null,
-    bool EnableNativeMultimodal = false); // 原生多模态：开启=本组请求保留媒体 content parts，关闭=剥离为纯文本
+    bool EnableNativeMultimodal = false, // 原生多模态：开启=本组请求保留媒体 content parts，关闭=剥离为纯文本
+    bool SmartThinkingEnabled = false);  // 智能思考：开启=本组默认非思考、复杂任务自动切回思考；关闭=恒思考

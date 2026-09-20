@@ -73,6 +73,10 @@ public class LanguageModelRouter(
     /// <summary>当前请求的最后一条用户消息（用于自定义关键词触发思考匹配）。请求由 ChatBot 串行分发，实例内无需加锁</summary>
     string? currentUserMessage;
 
+    /// <summary>本次请求实际使用的思考模式（FallbackHandler 在发送前按"最终服务组"的独立开关计算并记录），
+    /// 供响应流解析阶段复用：非思考模式下丢弃渠道残留的 reasoning。</summary>
+    volatile bool lastUsedThinkingMode = true;
+
     /// <summary>暴露思考请求记事本，供框架生态（XmlFunctionCaller 等）请求"本次应使用思考模式"</summary>
     public OccupationNotepad GetThinkingRequester() => thinkingRequester;
 
@@ -313,7 +317,14 @@ public class LanguageModelRouter(
                 return true;
             },
             getShowThinkingChain: () => Configuration!.ShowThinkingChain,
-            getThinkingMode: () => ComputeThinkingMode(Configuration!),
+            // 智能思考开关按组独立：按实际尝试的组计算，并记录结果供解析阶段复用
+            // （成功即返回，故最后一次调用对应真正服务的组）
+            getThinkingMode: group =>
+            {
+                bool mode = ComputeThinkingMode(Configuration!, group.SmartThinkingEnabled);
+                lastUsedThinkingMode = mode;
+                return mode;
+            },
             onServed: slot => LastServedGroupIndex = slot);
 
         httpClient = new HttpClient(fallbackHandler)
@@ -341,9 +352,9 @@ public class LanguageModelRouter(
     ///   让这类角色日常闲聊也能走非思考
     /// - ThinkingTriggerKeywords 配置的关键词命中当前用户消息时，即使默认非思考也强制走思考模式
     /// </summary>
-    internal bool ComputeThinkingMode(LanguageModelRouterConfig cfg)
+    internal bool ComputeThinkingMode(LanguageModelRouterConfig cfg, bool groupSmartThinkingEnabled)
     {
-        if (!cfg.SmartThinkingEnabled) return true;
+        if (!groupSmartThinkingEnabled) return true;
         // 用户消息命中自定义关键词 → 强制思考（优先级最高，先于忽略永久占用判断）
         if (MatchesThinkingTrigger(cfg, currentUserMessage)) return true;
         if (!cfg.IgnorePersistentThinking)
@@ -476,7 +487,8 @@ public class LanguageModelRouter(
 
             // 正常走 SSE 流式解析；个别渠道忽略 stream 参数返回完整 JSON 时走兼容解析
             // thinkingMode 用于解析阶段：非思考模式下若渠道仍返回 reasoning（无视 disabled），直接丢弃思维链
-            bool thinkingMode = ComputeThinkingMode(Configuration!);
+            // 复用发送阶段记录的思考模式（按实际服务组计算）：非思考时丢弃渠道残留的 reasoning
+            bool thinkingMode = lastUsedThinkingMode;
             int idleTimeoutMs = Configuration!.StreamIdleTimeoutMs;
             string? mediaType = response.Content.Headers.ContentType?.MediaType;
             if (string.Equals(mediaType, "text/event-stream", StringComparison.OrdinalIgnoreCase))
@@ -1029,7 +1041,8 @@ public class LanguageModelRouter(
                 ch.Temperature,
                 ParseExtraBody(ch.ExtraBody),
                 ParseExtraBody(ch.ExtraBodyNotThinking),
-                ch.EnableNativeMultimodal));
+                ch.EnableNativeMultimodal,
+                ch.SmartThinkingEnabled));
         }
 
         return groups;
