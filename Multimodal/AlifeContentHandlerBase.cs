@@ -1,94 +1,25 @@
 using System;
-using System.Collections.Generic;
-using System.Linq;
 using System.Text.Json.Nodes;
-using System.Threading;
-using System.Threading.Tasks;
 using Alife.Framework;
 using Alife.Function.FunctionCaller;
 using Microsoft.SemanticKernel;
-using Microsoft.SemanticKernel.ChatCompletion;
 
 namespace Alife.Plugin.LanguageModelRouter;
 
 /// <summary>
-/// 内容类型处理器抽象基类：提供把内容加入对话历史、校验 URL 以及构建
-/// AI 上传函数的共享工具，具体内容的序列化与入史逻辑由各实现脚本自行提供。
-/// 写法对齐官方 Alife.Function.Language.OpenAI 插件的 AlifeContentHandlerBase。
+/// 内容类型处理器基类：约定"一种内容类型 = 一个实现脚本"，自带协议序列化与 AI 调用注册函数。
+/// 新增内容类型只需新建脚本继承本类，即可被 <see cref="AlifeContentRegistry"/> 自动发现并参与序列化与函数注册。
+/// 共享工具（网址下载、统一 Load 函数构建、参数解析）见 <see cref="AlifeContentUtility"/>。
 /// </summary>
 public abstract class AlifeContentHandlerBase : IAlifeContentType
 {
     public abstract Type ContentType { get; }
 
-    /// <summary>默认以协议 content type 名作为注册标识，与面板展示一致，用户按模型服务商支持范围勾选；同类协议的新变体天然拥有不同 id。</summary>
+    /// <summary>默认以协议 content type 名作为注册标识，与面板展示一致，用户按模型服务商支持范围勾选。</summary>
     public virtual string? RegistrationKey => ProtocolTypeName;
+
     public abstract string DisplayName { get; }
     public abstract string ProtocolTypeName { get; }
     public abstract JsonObject SerializeContent(KernelContent content);
     public abstract XmlFunction? CreateXmlFunction(ChatBot chatBot, LanguageModelRouterConfig config, IMultimodalExecutor executor);
-
-    /// <summary>解析函数参数中的 temp（bool），判断 AI 是否请求常驻上下文。temp=true 表示临时查看，未传或 false 时默认常驻。</summary>
-    protected static bool IsPersistentRequested(XmlContext context)
-    {
-        return context.Parameters.TryGetValue("temp", out string? temp) == false ||
-            (temp.Equals("true", StringComparison.OrdinalIgnoreCase) == false &&
-             temp.Equals("1", StringComparison.OrdinalIgnoreCase) == false);
-    }
-
-    /// <summary>把内容加入对话历史。AI 上传函数在模型流式期间被后台执行，使用异步编辑不会死锁。</summary>
-    protected static Task QueueContentAsync(ChatBot chatBot, KernelContent content, string reason)
-    {
-        return chatBot.EditChatHistoryAsync(thread =>
-        {
-            ChatMessageContent chatMessageContent = new(AuthorRole.User, [content])
-            {
-                Content = content.GetType().Name
-            };
-            thread.ChatHistory.Add(chatMessageContent);
-            return Task.CompletedTask;
-        }, reason);
-    }
-
-    /// <summary>校验并解析模型服务可访问的 http(s) 地址。</summary>
-    protected static Uri RequireHttpUrl(string url, string argumentName)
-    {
-        if (Uri.TryCreate(url, UriKind.Absolute, out Uri? uri) == false ||
-            (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
-            throw new ArgumentException("必须是模型服务可访问的 http(s) 地址。", argumentName);
-        return uri;
-    }
-
-    /// <summary>
-    /// 按候选参数名依次读取（非空即返回），全部缺失返回 null。
-    /// 用于兼容历史/近义参数名（如 LoadVideo 旧版用 url、新版对齐官方改名 path），
-    /// 避免 AI 沿用旧参数名时报 "key not present" 之类的底层字典异常。
-    /// </summary>
-    protected static string? GetParameter(XmlContext context, params string[] names)
-    {
-        foreach (string name in names)
-        {
-            if (context.Parameters.TryGetValue(name, out string? value) && string.IsNullOrWhiteSpace(value) == false)
-                return value;
-        }
-        return null;
-    }
-
-    /// <summary>构建一个参数化的 AI 可调用 XmlFunction。</summary>
-    protected static XmlFunction BuildXmlFunction(
-        string name,
-        string? description,
-        IEnumerable<(string Name, string Description, string Type)> parameters,
-        Func<XmlContext, CancellationToken, Task> invoker)
-    {
-        return new XmlFunction
-        {
-            Name = name,
-            Description = description,
-            Mode = FunctionMode.OneShot,
-            Parameters = parameters
-                .Select(p => new XmlParameter { Name = p.Name, Type = p.Type, Description = p.Description })
-                .ToList(),
-            Invoker = invoker
-        };
-    }
 }

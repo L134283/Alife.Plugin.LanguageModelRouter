@@ -1,16 +1,14 @@
 using System;
 using System.IO;
 using System.Text.Json.Nodes;
-using System.Threading;
-using System.Threading.Tasks;
 using Alife.Framework;
 using Alife.Function.FunctionCaller;
 using Microsoft.SemanticKernel;
 
 namespace Alife.Plugin.LanguageModelRouter;
 
-/// <summary>图片内容：协议序列化为 <c>image_url</c>。AI 通过 <c>LoadImage</c> 查看，用 temp 参数选择临时/保留。
-/// 写法对齐官方 Alife.Function.Language.OpenAI 插件的 ImageContentType。</summary>
+/// <summary>图片内容：协议序列化为 <c>image_url</c>。AI 通过 <c>LoadImage</c> 查看，用 persistent 参数选择常驻/临时。
+/// 写法对齐官方 Alife.Function.Language.OpenAI 4.5.0 的 ImageContentRegistrar。</summary>
 public sealed class ImageContentType : AlifeContentHandlerBase
 {
     public override Type ContentType => typeof(ImageContent);
@@ -25,69 +23,12 @@ public sealed class ImageContentType : AlifeContentHandlerBase
 
     public override XmlFunction? CreateXmlFunction(ChatBot chatBot, LanguageModelRouterConfig config, IMultimodalExecutor executor)
     {
-        return BuildXmlFunction(
-            "LoadImage",
-            null,
-            [
-                ("path", "图片本机路径或 http(s) 地址", "String"),
-                ("temp", "临时分析并直接获取结果，默认false", "bool"),
-            ],
-            async (context, ct) => {
-                // 兼容近义参数名 url，避免 AI 误用时抛 key not present
-                string? pathOrUrl = GetParameter(context, "path", "url");
-                if (string.IsNullOrWhiteSpace(pathOrUrl))
-                {
-                    chatBot.Poke("请提供图片的本机路径或可直链访问的网络地址。");
-                    return;
-                }
-                ImageContent image = await LoadImageAsync(pathOrUrl);
-                bool persistent = IsPersistentRequested(context);
-                if (persistent)
-                {
-                    // 保留模式：媒体常驻上下文，后续请求由实际服务的渠道组按其"原生多模态"开关决定是否原生携带
-                    if (executor.IsPersistentAllowed(RegistrationKey!) == false)
-                    {
-                        chatBot.Poke("保留模式未授权，仅可使用 temp=true 临时查看。");
-                        return;
-                    }
-                    await QueueContentAsync(chatBot, image, "将图片加入对话上下文");
-                    chatBot.Poke("已上传");
-                    return;
-                }
-                // 临时模式：单次补全必须由当前渠道组原生携带图片，否则模型看不到内容
-                if (executor.CanUseNativeMultimodalNow() == false)
-                {
-                    chatBot.Poke("当前渠道组未开启「原生多模态」，无法临时查看图片。请在对应组的配置中开启，或改用 temp=false 加入上下文。");
-                    return;
-                }
-                try
-                {
-                    string result = await executor.CompleteWithContentAsync(chatBot, image, ct);
-                    chatBot.Poke(string.IsNullOrWhiteSpace(result) ? "未能获取图片内容。" : result);
-                }
-                catch (Exception e)
-                {
-                    chatBot.Poke($"图片查看失败：{e.Message}");
-                }
-            });
+        return AlifeContentUtility.BuildXmlFunction("LoadImage", ProtocolTypeName, ImageFileToContent, chatBot, executor);
     }
 
-    static async Task<ImageContent> LoadImageAsync(string pathOrUrl)
+    static KernelContent ImageFileToContent(string file)
     {
-        ImageContent image;
-        if (Uri.TryCreate(pathOrUrl, UriKind.Absolute, out Uri? uri) &&
-            (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps))
-        {
-            image = new ImageContent(uri);
-        }
-        else
-        {
-            if (File.Exists(pathOrUrl) == false)
-                throw new FileNotFoundException($"本地图片文件不存在：{pathOrUrl}。若为远端图片，请改传可直链访问的 http(s) 网络地址。", pathOrUrl);
-
-            image = new ImageContent(File.ReadAllBytes(pathOrUrl), GetMimeType(pathOrUrl));
-        }
-        return image;
+        return new ImageContent(File.ReadAllBytes(file), GetMimeType(file));
     }
 
     static string GetImageUrl(ImageContent image)

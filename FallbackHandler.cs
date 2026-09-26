@@ -124,7 +124,7 @@ public class FallbackHandler : DelegatingHandler
             req.RequestUri = BuildNewUri(request.RequestUri!, group.Endpoint.AbsoluteUri);
             if (req.Headers.Authorization != null)
                 req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", group.ApiKey);
-            await RewriteRequestBody(req, group.ModelId, group.ReasoningEffort, group.ExtraBody, group.ExtraBodyNotThinking, thinkingMode, group.EnableNativeMultimodal, group.Temperature);
+            await RewriteRequestBody(req, group.ModelId, group.ReasoningEffort, group.ExtraBody, group.ExtraBodyNotThinking, thinkingMode, group.EnableNativeMultimodal, group.EnableAudioMultimodal, group.Temperature);
             if (group.ExtraHeaders != null)
             {
                 foreach (var header in group.ExtraHeaders)
@@ -323,7 +323,7 @@ public class FallbackHandler : DelegatingHandler
         return clone;
     }
 
-    static async Task RewriteRequestBody(HttpRequestMessage req, string newModelId, string? reasoningEffort = null, IReadOnlyDictionary<string, object?>? extraBody = null, IReadOnlyDictionary<string, object?>? extraBodyNotThinking = null, bool thinkingMode = true, bool nativeMultimodal = false, double? temperature = null)
+    static async Task RewriteRequestBody(HttpRequestMessage req, string newModelId, string? reasoningEffort = null, IReadOnlyDictionary<string, object?>? extraBody = null, IReadOnlyDictionary<string, object?>? extraBodyNotThinking = null, bool thinkingMode = true, bool allowImageVideo = false, bool allowAudio = false, double? temperature = null)
     {
         if (req.Content == null) return;
         try
@@ -339,10 +339,10 @@ public class FallbackHandler : DelegatingHandler
             else
                 obj.Remove("temperature");
 
-            // 原生多模态剥离：本组未开启时，把消息中的 content parts（image_url/file/video_url 等）统一
-            // 收敛为纯文本（仅拼接 text part）。开启时保留原生 parts，让模型真正"看到"媒体。
-            if (nativeMultimodal == false)
-                NormalizeMessagesToText(obj);
+            // 原生多模态剥离（按类型）：本组未开启对应开关时，把该类媒体 parts 从 content 数组移除
+            // （image_url/video_url 归"原生多模态"总开关，input_audio 归"音频输入"开关）。
+            // 开启的类型保持原生 parts，让模型真正"看到"媒体。
+            FilterMediaParts(obj, allowImageVideo, allowAudio);
 
             if (thinkingMode)
             {
@@ -420,12 +420,15 @@ public class FallbackHandler : DelegatingHandler
     }
 
     /// <summary>
-    /// 原生多模态剥离：目标渠道组未开启"原生多模态"时，把 messages 中 content 为数组（content parts）的
-    /// 消息收敛为纯文本字符串（仅拼接 text 部分，丢弃 image_url/file/video_url 等媒体）。
-    /// 纯文本字符串消息原样保留，幂等操作。
+    /// 按"本组是否开启对应类型"过滤消息中的媒体 content parts：
+    /// image_url / video_url 归"原生多模态"总开关；input_audio 归"音频输入"开关。
+    /// 被禁用的媒体块会被移除；若整条消息因此没有可保留的媒体，则收敛为纯文本（仅拼 text，或用占位兜底）。
+    /// 纯字符串消息（非数组）原样保留，幂等操作。
     /// </summary>
-    static void NormalizeMessagesToText(JObject obj)
+    static void FilterMediaParts(JObject obj, bool allowImageVideo, bool allowAudio)
     {
+        if (allowImageVideo && allowAudio)
+            return; // 两类都开启，无需处理
         if (obj["messages"] is not JArray messages)
             return;
 
@@ -434,37 +437,62 @@ public class FallbackHandler : DelegatingHandler
             if (msgToken is not JObject msg || msg["content"] is not JArray parts)
                 continue;
 
-            var sb = new StringBuilder();
-            string? firstMediaType = null;
+            var keptParts = new JArray();
+            var text = new StringBuilder();
+            string? blockedPlaceholder = null;
+            bool hasKeptMedia = false;
+
             foreach (JToken? partToken in parts)
             {
                 if (partToken is not JObject part)
                     continue;
-                if (string.Equals(part["type"]?.Value<string>(), "text", StringComparison.OrdinalIgnoreCase)
-                    && part["text"] is JValue textValue
-                    && textValue.Value is string text)
+
+                string? type = part["type"]?.Value<string>()?.ToLowerInvariant();
+                bool blocked = type switch
                 {
-                    sb.Append(text);
+                    "image_url" or "video_url" => !allowImageVideo,
+                    "input_audio" => !allowAudio,
+                    _ => false
+                };
+
+                if (blocked)
+                {
+                    blockedPlaceholder ??= MediaPlaceholder(type);
                     continue;
                 }
-                // 记录媒体类型：仅在整条消息没有任何 text 部分时用于生成占位
-                if (firstMediaType == null && part["type"] is JValue typeValue && typeValue.Value is string mediaType)
-                    firstMediaType = mediaType;
+
+                if (type == "text")
+                {
+                    if (part["text"] is JValue textValue && textValue.Value is string t)
+                        text.Append(t);
+                }
+                else
+                {
+                    hasKeptMedia = true;
+                }
+                keptParts.Add(part);
             }
-            if (sb.Length == 0 && firstMediaType != null)
-                sb.Append(MediaPlaceholder(firstMediaType)); // 纯媒体消息兜底，避免空 content 报错
-            msg["content"] = sb.ToString();
+
+            if (blockedPlaceholder == null)
+                continue; // 本消息没有被剥离的媒体，保持原样
+
+            // 还有可保留的媒体 → 保留数组；否则收敛为纯文本（text 优先，其次占位）
+            if (hasKeptMedia)
+                msg["content"] = keptParts;
+            else
+                msg["content"] = text.Length > 0 ? text.ToString() : blockedPlaceholder;
         }
     }
 
-    /// <summary>媒体类型占位文本（仅在消息没有任何 text 部分时使用）</summary>
+    /// <summary>媒体类型占位文本（仅在消息没有任何 text、且媒体全部被剥离时使用）</summary>
     static string MediaPlaceholder(string? type)
     {
-        return type?.ToLowerInvariant() switch
+        return type switch
         {
             "image_url" => "[图片]",
-            "file" => "[文件]",
             "video_url" => "[视频]",
+            "input_audio" => "[音频]",
+            "file" => "[文件]",
             _ => "（媒体内容）"
         };
     }
@@ -632,5 +660,6 @@ public record FallbackGroup(
     double? Temperature = null, // 采样温度：null=不发送该参数（服务端默认）；对齐官方 OpenAI 语言模型 temperature
     IReadOnlyDictionary<string, object?>? ExtraBody = null,
     IReadOnlyDictionary<string, object?>? ExtraBodyNotThinking = null,
-    bool EnableNativeMultimodal = false, // 原生多模态：开启=本组请求保留媒体 content parts，关闭=剥离为纯文本
+    bool EnableNativeMultimodal = false, // 原生多模态：开启=本组请求保留 image_url/video_url 媒体 parts，关闭=剥离为占位文本
+    bool EnableAudioMultimodal = false,  // 音频多模态：开启=本组请求保留 input_audio parts，关闭=剥离为占位文本
     bool SmartThinkingEnabled = false);  // 智能思考：开启=本组默认非思考、复杂任务自动切回思考；关闭=恒思考

@@ -9,7 +9,7 @@ namespace Alife.Plugin.LanguageModelRouter;
 /// <summary>
 /// 灵枢侧的多模态对话协议序列化层（仅做媒体消息的 content parts 序列化，文本仍走原字符串通道以保持最大兼容）。
 /// 逻辑对齐官方 OpenAI 语言模型的"原生 content parts"写法：把 SK 消息 Items 中的
-/// ImageContent / FileUrlContent / VideoUrlContent 等转成 OpenAI 兼容的 content 数组，
+/// ImageContent / VideoUrlContent / AudioContent 等转成 OpenAI 兼容的 content 数组，
 /// 纯文本消息保持原有字符串序列化，避免给纯文本渠道带来不必要的行为变化。
 /// </summary>
 public static class NativeMultimodalProtocol
@@ -95,8 +95,8 @@ public static class NativeMultimodalProtocol
                 placeholder = item switch
                 {
                     ImageContent => "[图片]",
-                    FileUrlContent => "[文件]",
                     VideoUrlContent => "[视频]",
+                    AudioContent => "[音频]",
                     _ => "（媒体内容）"
                 };
         }
@@ -104,11 +104,12 @@ public static class NativeMultimodalProtocol
         if (placeholder == null)
             return null; // 没有媒体，维持原文本逻辑
 
-        // Items 无文本，但消息显式 Content 若为真实文本（非媒体内部类型名），应保留而非用占位覆盖
+        // Items 无文本，但消息显式 Content 若为真实文本（非媒体内部类型名/多模态标记），应保留而非用占位覆盖
         if (string.IsNullOrWhiteSpace(plainText) == false
             && plainText != "ImageContent"
-            && plainText != "FileUrlContent"
-            && plainText != "VideoUrlContent")
+            && plainText != "VideoUrlContent"
+            && plainText != "AudioContent"
+            && plainText.StartsWith("[多模态内容(", System.StringComparison.Ordinal) == false)
             return null;
 
         return placeholder;

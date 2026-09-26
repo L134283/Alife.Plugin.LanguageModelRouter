@@ -1320,7 +1320,7 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
         AlertLine(b, "✧", "替换框架内置 OpenAI 语言模型，支持多路文本模型自动容灾切换、拖动/按钮排序与自由增删渠道组", false);
         AlertLine(b, "✧", "遇到 HTTP 429/402/5xx 错误或响应体包含指定关键字时，自动切换到下一组渠道重试", false);
         AlertLine(b, "✧", "同时支持 reasoning_content 等 SSE 思维链流的自动转换", false);
-        AlertLine(b, "✧", "原生多模态（对齐官方 OpenAI）：每组可独立开启，图片/文件/视频以原生 content parts 发送，AI 可用 LoadImage/LoadFile/LoadVideo 查看", false);
+        AlertLine(b, "✧", "原生多模态（对齐官方 OpenAI 4.5.0）：每组可独立开启「原生多模态」（图片/视频）与「音频输入」，AI 可用 LoadImage/LoadVideo/LoadAudio 查看", false);
         AlertLine(b, "◈", "使用前请在角色配置中禁用 OpenAILanguageModel，启用本模块", true);
         b.CloseElement();
 
@@ -1417,7 +1417,7 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
         b.OpenElement(_seq++, "div");
         b.AddAttribute(_seq++, "class", "ls-section");
         SectionTitle(b, "使用说明");
-        AddHint(b, "1. 在角色配置中禁用「OpenAI语言模型」，启用「灵枢 - OpenAI语言模型报错自动切换」\n2. 调整渠道顺序：拖动卡片左上角「⠿」手柄，或点击卡片右侧「↑/↓」按钮前移/后移；排最上方的组即为主渠道，必须填写 Endpoint、Model ID 和 API Key\n3. 其余组为备用渠道，遇到 429/402/5xx 错误时按从上到下顺序自动切换\n4. 组名称可用于 AI 识别渠道，如对桌宠说「切换到 deepseek」即可对应切换\n5. 可点击「添加渠道组」自由新增，展开备用组卡片后点「删除」移除（主组不可删，至少保留 1 组）\n6. 配置保存后即刻生效，无需重新加载模块\n7. （可选）原生多模态：在支持多模态输入的模型组开启「原生多模态」（如图文模型 gpt-4o），图片等媒体将原生随对话发送，AI 可调用 LoadImage/LoadFile/LoadVideo 查看；纯文本模型组请保持关闭。开启后需保存配置并重载一次本插件以完成 Load 系函数注册");
+        AddHint(b, "1. 在角色配置中禁用「OpenAI语言模型」，启用「灵枢 - OpenAI语言模型报错自动切换」\n2. 调整渠道顺序：拖动卡片左上角「⠿」手柄，或点击卡片右侧「↑/↓」按钮前移/后移；排最上方的组即为主渠道，必须填写 Endpoint、Model ID 和 API Key\n3. 其余组为备用渠道，遇到 429/402/5xx 错误时按从上到下顺序自动切换\n4. 组名称可用于 AI 识别渠道，如对桌宠说「切换到 deepseek」即可对应切换\n5. 可点击「添加渠道组」自由新增，展开备用组卡片后点「删除」移除（主组不可删，至少保留 1 组）\n6. 配置保存后即刻生效，无需重新加载模块\n7. （可选）多模态：在支持多模态输入的模型组开启「原生多模态」（图片/视频，如图文模型 gpt-4o）或「音频输入」（如支持音频的模型），媒体将原生随对话发送，AI 可调用 LoadImage/LoadVideo/LoadAudio 查看；纯文本模型组请保持关闭。开启后需保存配置并重载一次本插件以完成 Load 系函数注册");
         b.CloseElement();
     }
 
@@ -1479,13 +1479,13 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
         return cfg.Groups[g].IsConfigured;
     }
 
-    /// <summary>槽位是否开启了"原生多模态"（组卡片徽标与配置提示用）</summary>
+    /// <summary>槽位是否开启了任意多模态（原生多模态或音频输入；组卡片徽标用）</summary>
     bool IsNativeEnabledSlot(int g)
     {
         var cfg = Configuration!;
         cfg.EnsureGroups();
         if (g < 0 || g >= cfg.Groups.Count) return false;
-        return cfg.Groups[g].EnableNativeMultimodal;
+        return cfg.Groups[g].EnableNativeMultimodal || cfg.Groups[g].EnableAudioMultimodal;
     }
 
     // ==================== Group Config ====================
@@ -1530,8 +1530,14 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
         // 原生多模态（每组独立开关，对齐官方 OpenAI 语言模型多模态支持）
         AddToggleRow(b, $"nativeMultimodal_{g}", ch.EnableNativeMultimodal,
             v => ch.EnableNativeMultimodal = v,
-            "原生多模态（开启后本组按 OpenAI 原生 content parts：image_url / file / video_url 把图片等媒体随对话发送给模型）");
-        AddHint(b, "仅供支持原生多模态输入的模型开启（如图文模型 gpt-4o 系列）。纯文本模型请保持关闭（默认），避免把媒体塞给不支持的上游。\n开启后：① 媒体消息即刻以原生格式随请求发送（无需重载）；② 同时向 AI 注册 LoadImage / LoadFile / LoadVideo 查看函数（常驻文档，需保存配置后重载一次本插件生效）。");
+            "原生多模态（开启后本组按 OpenAI 原生 content parts：image_url / video_url 把图片、视频随对话发送给模型）");
+        AddHint(b, "仅供支持原生多模态输入的模型开启（如图文模型 gpt-4o 系列）。纯文本模型请保持关闭（默认），避免把媒体塞给不支持的上游。\n开启后：① 媒体消息即刻以原生格式随请求发送（无需重载）；② 同时向 AI 注册 LoadImage / LoadVideo 查看函数（常驻文档，需保存配置后重载一次本插件生效）。");
+
+        // 音频输入（每组独立开关，对齐官方 4.5.0 新增的音频多模态）
+        AddToggleRow(b, $"audioMultimodal_{g}", ch.EnableAudioMultimodal,
+            v => ch.EnableAudioMultimodal = v,
+            "音频输入（开启后本组按 OpenAI 原生 input_audio 把音频随对话发送给模型）");
+        AddHint(b, "仅供支持音频输入的模型开启（多数模型不支持，请保持关闭）。开启后 AI 可调用 LoadAudio 查看音频（常驻文档，需保存配置后重载一次本插件生效）。");
 
         // 智能思考/非思考切换（每组独立开关）
         AddToggleRow(b, $"smartThinking_{g}", ch.SmartThinkingEnabled,

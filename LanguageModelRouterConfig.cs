@@ -20,12 +20,18 @@ public class GroupChannel
     public string? ExtraBody { get; set; }
     public string? ExtraBodyNotThinking { get; set; } // 非思考模式请求体（对齐官方 extraBodyNotThinking，默认 {"thinking":{"type":"disabled"}}）
 
-    // === 原生多模态（对齐官方 OpenAI 语言模型多模态支持）===
-    // 开启后本组视为支持 OpenAI 兼容原生多模态协议：对话中的图片/文件/视频等媒体内容将按
-    // 原生 content parts（image_url / file / video_url）随消息发送给模型（模型真正"看"得到），
-    // 同时向 AI 开放 LoadImage / LoadFile / LoadVideo 查看函数（注册需在开启后重载一次插件）。
+    // === 原生多模态（每组独立开关，对齐官方 OpenAI 语言模型多模态支持）===
+    // 开启后本组视为支持 OpenAI 兼容原生多模态协议：对话中的图片/视频等媒体内容将按
+    // 原生 content parts（image_url / video_url）随消息发送给模型（模型真正"看"得到），
+    // 同时向 AI 开放 LoadImage / LoadVideo 查看函数（注册需在开启后重载一次插件）。
     // 纯文本模型（如 deepseek-chat）请保持关闭，避免把图片塞给不支持多模态的上游。
+    // 注意：v4.7.4 起对齐官方 4.5.0，已移除"文件"多模态；音频见下方独立开关。
     public bool EnableNativeMultimodal { get; set; } = false;
+
+    // === 音频输入（每组独立开关，对齐官方 4.5.0 新增的音频多模态）===
+    // 独立于上面的"原生多模态"总开关：开启后本组可在对话中携带音频（input_audio）内容。
+    // 支持音频输入的模型较少，默认关闭。
+    public bool EnableAudioMultimodal { get; set; } = false;
 
     // === 智能思考/非思考切换（每组独立）===
     // 开启后本组默认非思考：回复更快、token 更省；当 AI 需要调用工具、处理群消息、
@@ -144,12 +150,13 @@ public class LanguageModelRouterConfig
         EnsureApiKeysProtected();
     }
 
-    /// <summary>是否存在至少一组开启了"原生多模态"的已配置渠道（Load 系函数注册与原生 parts 序列化的总开关）。</summary>
-    public bool HasNativeMultimodalGroup()
+    /// <summary>是否存在至少一组开启了任意"多模态"（原生多模态或音频输入）的已配置渠道
+    /// （Load 系函数注册与原生 parts 序列化的总开关）。</summary>
+    public bool HasAnyMultimodalGroup()
     {
         if (Groups == null || Groups.Count == 0)
             return false;
-        return Groups.Any(ch => ch.IsConfigured && ch.EnableNativeMultimodal);
+        return Groups.Any(ch => ch.IsConfigured && (ch.EnableNativeMultimodal || ch.EnableAudioMultimodal));
     }
 
     bool HasLegacyConfig()

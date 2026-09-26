@@ -57,7 +57,7 @@ public class LanguageModelRouter(
     /// <summary>本模块注册的 XmlHandler（热重载销毁时必须注销，避免旧 handler 在表中累积导致函数被重复执行）</summary>
     XmlHandler? registeredHandler;
 
-    /// <summary>原生多模态输入 XmlHandler（LoadImage/LoadFile/LoadVideo，至少一组开启"原生多模态"时注册，销毁时注销）</summary>
+    /// <summary>多模态输入 XmlHandler（LoadImage/LoadVideo/LoadAudio，至少一组开启任意多模态时注册，销毁时注销）</summary>
     XmlHandler? registeredMultimodalHandler;
 
     /// <summary>思考请求记事本：XmlFunctionCaller/QChat/音频监听等框架模块通过 ILanguageModel.GetThinkingRequester()
@@ -82,13 +82,14 @@ public class LanguageModelRouter(
 
     // ──── IMultimodalExecutor（原生多模态，对齐官方 OpenAI 语言模型）────
 
-    /// <summary>默认允许所有内容类型使用保留模式（媒体常驻上下文；与官方默认行为一致，空 = 全部允许保留）。</summary>
-    bool IMultimodalExecutor.IsPersistentAllowed(string registrationKey) => true;
+    /// <summary>
+    /// 当前即将服务请求的渠道组是否开启了该内容类型对应的原生多模态
+    /// （input_audio 看"音频输入"开关，其余看"原生多模态"总开关，= FallbackHandler 的起始组）。
+    /// </summary>
+    bool IMultimodalExecutor.CanUseContentType(string protocolTypeName) => IsCurrentGroupContentTypeEnabled(protocolTypeName);
 
-    bool IMultimodalExecutor.CanUseNativeMultimodalNow() => IsCurrentGroupNativeMultimodal();
-
-    /// <summary>当前即将服务请求的渠道组是否开启了"原生多模态"（= FallbackHandler 的起始组）。</summary>
-    internal bool IsCurrentGroupNativeMultimodal()
+    /// <summary>当前即将服务请求的渠道组是否开启了指定内容类型（= FallbackHandler 的起始组）。</summary>
+    internal bool IsCurrentGroupContentTypeEnabled(string protocolTypeName)
     {
         var cfg = Configuration;
         if (cfg == null) return false;
@@ -99,43 +100,19 @@ public class LanguageModelRouter(
         int startIdx = GetForcedDisplayIndex(cfg); // FallbackHandler 起始组（显示索引）；-1 = 主组
         if (startIdx < 0 || startIdx >= groups.Count)
             startIdx = 0;
-        return groups[startIdx].EnableNativeMultimodal;
-    }
 
-    /// <summary>临时式补全：复用主线程，在锁内临时追加媒体为最新用户消息，调用 ChatStreamingAsync 后移除临时消息，不污染主历史。</summary>
-    async Task<string> IMultimodalExecutor.CompleteWithContentAsync(
-        ChatBot chatBot, KernelContent content, CancellationToken cancellationToken)
-    {
-        string result = "";
-        Exception? error = null;
-        await chatBot.EditChatHistoryAsync(async thread =>
-        {
-            ChatHistory history = thread.ChatHistory;
-            int startIndex = history.Count;
-            history.AddUserMessage([content, new TextContent("已临时上传，请立即完整分析内容。稍后这次对话将被删除，你的回复将作为分析结果返回。")]);
-            try
-            {
-                result = await ChatStreamingAsync(thread,
-                    exceptionThrow: e => error = e,
-                    cancellationToken: cancellationToken);
-            }
-            finally
-            {
-                history.RemoveRange(startIndex, history.Count - startIndex);
-            }
-        }, "多模态分析");
-
-        // ChatStreamingAsync 会吞掉异常（通过回调），这里透传，避免调用方收到静默的空结果
-        if (error != null)
-            throw error;
-        return "分析结果如下：" + result;
+        var group = groups[startIdx];
+        return string.Equals(protocolTypeName, "input_audio", StringComparison.OrdinalIgnoreCase)
+            ? group.EnableAudioMultimodal
+            : group.EnableNativeMultimodal;
     }
 
     protected override async Task OnAwake()
     {
         // 模块构造发生在 ChatBot 构造期间，凡间接依赖 ChatBot 的服务都需在 Awake 后经容器获取
         interactor = (IInteractor<LanguageModelRouter>)await ChatActivity.Container.RequireInstance(typeof(IInteractor<LanguageModelRouter>));
-        functionService = (XmlFunctionCaller)await ChatActivity.Container.RequireInstance(typeof(XmlFunctionCaller));
+        // allowSpare=true：XmlFunctionCaller 属"后备模块"，用户未启用它时也能构造一个实例用于注入函数文档
+        functionService = (XmlFunctionCaller)await ChatActivity.Container.RequireInstance(typeof(XmlFunctionCaller), true);
 
         var handler = new XmlHandler(this)
         {
@@ -157,9 +134,9 @@ public class LanguageModelRouter(
         var cfg = Configuration;
         var groups = cfg != null ? BuildFallbackGroups(cfg) : new List<FallbackGroup>();
 
-        // 原生多模态（对齐官方 OpenAI 语言模型）：至少一组开启"原生多模态"时，注册 AI 的
-        // LoadImage/LoadFile/LoadVideo 查看函数。Load 系函数文档由 XmlFunctionCaller 常驻注入。
-        if (cfg != null && cfg.HasNativeMultimodalGroup())
+        // 原生多模态（对齐官方 OpenAI 语言模型）：至少一组开启任意多模态时，注册 AI 的
+        // LoadImage/LoadVideo/LoadAudio 查看函数。Load 系函数文档由 XmlFunctionCaller 常驻注入。
+        if (cfg != null && cfg.HasAnyMultimodalGroup())
         {
             try
             {
@@ -193,10 +170,10 @@ public class LanguageModelRouter(
                 sb.AppendLine($"- 第{slot + 1}组{main}{label}：{groups[i].Endpoint} → {groups[i].ModelId}");
             }
         }
-        if (cfg != null && cfg.HasNativeMultimodalGroup())
+        if (cfg != null && cfg.HasAnyMultimodalGroup())
         {
             sb.AppendLine();
-            sb.AppendLine("其中部分渠道组开启了「原生多模态」。当需要分析图片/文件/视频时，你可以使用 LoadImage / LoadFile / LoadVideo 函数查看这些内容。");
+            sb.AppendLine("其中部分渠道组开启了「原生多模态」或「音频输入」。当需要分析图片/视频/音频时，你可以使用 LoadImage / LoadVideo / LoadAudio 函数查看这些内容。");
         }
         sb.AppendLine();
 
@@ -419,7 +396,7 @@ public class LanguageModelRouter(
             // 组装 OpenAI 兼容请求体；FallbackHandler 在管道内按当前组重写 model / reasoning_effort / extraBody 与目标地址，
             // 并按目标组的"原生多模态"开关决定保留还是剥离消息中的媒体 parts（对齐官方 OpenAI 原生多模态写法）。
             // 同时记录最后一条 user 消息，供"自定义关键词触发思考"匹配。
-            bool allowNative = groups.Any(g => g.EnableNativeMultimodal);
+            bool allowNative = groups.Any(g => g.EnableNativeMultimodal || g.EnableAudioMultimodal);
             var messages = new JsonArray();
             currentUserMessage = null;
             foreach (var msg in chatHistoryAgentThread.ChatHistory)
