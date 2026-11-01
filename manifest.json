@@ -1,7 +1,8 @@
 {
-  "Version": "4.7.4",
+  "Version": "5.0.0",
   "Dependencies": {
-    "Alife.Function.FunctionCaller": ""
+    "Alife.Function.FunctionCaller": "",
+    "Alife.Function.TokenStatistics": ""
   },
   "Environments": {
     "nuget": {

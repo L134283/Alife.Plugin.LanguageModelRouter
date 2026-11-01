@@ -94,12 +94,13 @@ public class LanguageModelRouterConfig
     public int[] GroupOrder { get; set; } = new[] { 0, 1, 2, 3 };
 
     // === 容灾设置 ===
-    public string? ErrorKeywords { get; set; } // 逗号分隔
+    public string? ErrorKeywords { get; set; } // 逗号分隔；额外错误关键字。429/402/401/403/5xx、超时、网络错误、
+                                              // 内容审查类（data_inspection_failed 等）与额度不足类（insufficient_quota/积分不足等）已内置
     public int RetryDelayMs { get; set; } = 1000;
     public int RequestTimeoutMs { get; set; } = 30000; // 单次渠道请求超时（毫秒）：渠道挂起/无响应时按此超时视为失败并触发容灾，避免长时间卡住
     public int StreamIdleTimeoutMs { get; set; } = 0; // SSE 流空闲超时（毫秒）：已建立连接但长时间未收到任何数据（含 keep-alive 注释行）视为异常，0=关闭
     public bool PriorityMainChannel { get; set; } = false; // 优先主渠道：每次请求先试主渠道，全程静默容灾
-    public bool ShowThinkingChain { get; set; } = true; // 是否将 reasoning/thinking 转为可见思维链
+    public bool ShowThinkingChain { get; set; } = true; // 是否把 reasoning/thinking 推送到对话的思考过程区（关闭=只显示正文，思考仍计入统计）
 
     // === 智能思考/非思考切换（对齐官方 OpenAILanguageModel 机制）===
     public bool SmartThinkingEnabled { get; set; } = false; // 独立开关：启用后默认非思考，AI 需要深度思考时自动切回思考

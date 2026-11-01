@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using System.Reflection;
 using System.Text.Json.Nodes;
 using Alife.Framework;
 using Alife.Function.FunctionCaller;
@@ -21,14 +20,23 @@ public static class AlifeContentRegistry
     /// <summary>程序集中全部内容类型处理器（含新增脚本）。</summary>
     public static IReadOnlyList<IAlifeContentType> Handlers => handlers.Value;
 
-    public static JsonObject SerializeContent(KernelContent content)
+    /// <summary>按 SK 内容类型查找处理器（未注册返回 null）。</summary>
+    public static IAlifeContentType? Find(KernelContent content)
     {
         foreach (IAlifeContentType handler in Handlers)
         {
             if (handler.ContentType.IsInstanceOfType(content))
-                return handler.SerializeContent(content);
+                return handler;
         }
-        throw new NotSupportedException($"不支持的多模态内容类型 '{content.GetType().Name}'");
+        return null;
+    }
+
+    public static JsonObject SerializeContent(KernelContent content)
+    {
+        IAlifeContentType? handler = Find(content);
+        if (handler == null)
+            throw new NotSupportedException($"不支持的多模态内容类型 '{content.GetType().Name}'");
+        return handler.SerializeContent(content);
     }
 
     /// <summary>把各内容类型暴露的 AI 上传函数汇总注册到一个 XmlHandler。</summary>

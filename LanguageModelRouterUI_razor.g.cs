@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
 using Alife.Framework;
 using Microsoft.AspNetCore.Components;
@@ -19,6 +20,10 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
     /// <summary>每组渠道卡片的折叠状态（受控，避免任何 StateHasChanged 重渲染后原生 &lt;details&gt; 被意外收起）。
     /// 键为 GroupChannel 引用，拖动排序后展开状态跟随原组内容而不是位置。</summary>
     readonly Dictionary<GroupChannel, bool> _groupOpenStates = new();
+
+    /// <summary>通用折叠区状态（键为区块标识，如 "help"、"disaster"、"group:2:adv"），
+    /// 与 <see cref="_groupOpenStates"/> 同理：受控保存，重渲染后不丢失。</summary>
+    readonly Dictionary<string, bool> _foldStates = new();
 
     // 订阅标记，Dispose 时退订静态事件，避免累积订阅（内存泄漏 + 重复刷新）
     bool _subscribed;
@@ -1161,6 +1166,184 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
   box-shadow: 0 0 14px rgba(232,198,90,0.25);
 }
 
+/* ==================== 信息层级（5.0.0 排版优化） ==================== */
+
+/* 唯一强提醒：一条就够，其余说明收进底部帮助 */
+.ls-requirement {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  margin: 0 0 16px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid rgba(232,198,90,0.42);
+  background: linear-gradient(120deg, rgba(232,198,90,0.16), rgba(232,198,90,0.04));
+  font-size: 12px;
+  color: var(--ls-gold-bright);
+  line-height: 1.65;
+}
+.ls-requirement-icon { flex: 0 0 auto; font-size: 13px; line-height: 1.5; }
+
+/* 概览卡：当前渠道 + 状态指标 + 一键切换 */
+.ls-hero {
+  margin-bottom: 6px;
+  padding: 16px 16px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(232,198,90,0.22);
+  background:
+    radial-gradient(ellipse 70% 120% at 0% 0%, rgba(232,198,90,0.14), transparent 60%),
+    linear-gradient(160deg, rgba(30,24,14,0.96), rgba(10,9,7,0.98));
+  box-shadow: 0 6px 24px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,240,176,0.06);
+}
+.ls-hero-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ls-hero-kicker { font-size: 10.5px; letter-spacing: 2px; color: var(--ls-text-mute); }
+.ls-hero-title {
+  font-size: 16px;
+  font-weight: 800;
+  color: var(--ls-gold-bright);
+  letter-spacing: 0.5px;
+  text-shadow: 0 0 14px rgba(255,240,176,0.3);
+}
+.ls-hero-desc { margin-top: 6px; font-size: 11.5px; color: var(--ls-text-dim); line-height: 1.6; }
+.ls-hero-metrics { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
+.ls-metric {
+  flex: 1 1 110px;
+  padding: 8px 10px;
+  border-radius: 9px;
+  border: 1px solid rgba(232,198,90,0.14);
+  background: rgba(0,0,0,0.28);
+}
+.ls-metric-k { font-size: 10px; letter-spacing: 1.2px; color: var(--ls-text-mute); }
+.ls-metric-v { margin-top: 3px; font-size: 13px; font-weight: 700; color: var(--ls-text); word-break: break-all; }
+
+/* 区块标题：一个主标题 + 一句右侧说明，替代长段落 */
+.ls-block-title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 22px 0 10px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(232,198,90,0.16);
+}
+.ls-block-title .ls-block-name {
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  color: var(--ls-gold-bright);
+}
+.ls-block-title .ls-block-note { font-size: 11px; color: var(--ls-text-mute); }
+
+/* 渠道组卡片头：整行可点开/收起 */
+.ls-card-head2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  cursor: pointer;
+  user-select: none;
+}
+.ls-card-index { font-size: 11px; letter-spacing: 1px; color: var(--ls-text-mute); }
+.ls-card-name { font-size: 13.5px; font-weight: 700; color: var(--ls-text); }
+.ls-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 7px;
+  font-size: 11.5px;
+  color: var(--ls-text-mute);
+}
+.ls-card-meta code {
+  font-family: ui-monospace, Consolas, monospace;
+  color: var(--ls-text-dim);
+  background: rgba(255,255,255,0.04);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+.ls-dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
+.ls-dot-ok { background: #a8d47a; box-shadow: 0 0 8px rgba(168,212,122,0.7); }
+.ls-dot-off { background: #ef7a68; box-shadow: 0 0 8px rgba(239,122,104,0.6); }
+.ls-chevron {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--ls-gold-dim);
+  transition: transform .25s ease;
+}
+.ls-chevron-open { transform: rotate(90deg); }
+
+/* 卡片内分组：连接 / 能力 / 高级参数 */
+.ls-subgroup {
+  margin-top: 14px;
+  padding-top: 10px;
+  border-top: 1px dashed rgba(232,198,90,0.16);
+}
+.ls-subgroup-first { margin-top: 4px; padding-top: 0; border-top: none; }
+.ls-subgroup-title {
+  font-size: 11px;
+  letter-spacing: 1.6px;
+  color: var(--ls-gold-dim);
+  margin-bottom: 6px;
+}
+
+/* 紧凑开关行：标题 + 一行说明 */
+.ls-toggle-compact {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-bottom: 8px;
+  padding: 9px 12px;
+  border-radius: 9px;
+  border: 1px solid rgba(232,198,90,0.14);
+  background: rgba(0,0,0,0.22);
+  transition: border-color .2s, background .2s;
+}
+.ls-toggle-compact:hover { border-color: rgba(232,198,90,0.3); background: rgba(0,0,0,0.3); }
+.ls-toggle-compact input { margin-top: 2px; }
+.ls-tc-title { font-size: 12.5px; font-weight: 600; color: var(--ls-text); line-height: 1.5; }
+.ls-tc-desc { font-size: 10.5px; color: var(--ls-text-mute); line-height: 1.55; margin-top: 2px; }
+
+/* 受控折叠区（不用 details，避免重渲染后自动收起） */
+.ls-fold {
+  margin-top: 10px;
+  border-radius: 10px;
+  border: 1px solid rgba(232,198,90,0.14);
+  background: rgba(0,0,0,0.18);
+  overflow: hidden;
+}
+.ls-fold-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 12px;
+  border: none;
+  background: transparent;
+  color: var(--ls-text-dim);
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: color .2s, background .2s;
+}
+.ls-fold-btn:hover { color: var(--ls-gold-bright); background: rgba(232,198,90,0.06); }
+.ls-fold-arrow { font-size: 9px; color: var(--ls-gold-dim); transition: transform .25s ease; }
+.ls-fold-open .ls-fold-arrow { transform: rotate(90deg); }
+.ls-fold-body { padding: 4px 12px 12px; border-top: 1px solid rgba(232,198,90,0.12); }
+
+/* 帮助列表 */
+.ls-help-list { margin: 0; padding-left: 18px; }
+.ls-help-list li { font-size: 11.5px; color: var(--ls-text-dim); line-height: 1.85; }
+.ls-help-list li b { color: var(--ls-gold-bright); font-weight: 700; }
+.ls-help-list li code {
+  font-family: ui-monospace, Consolas, monospace;
+  background: rgba(255,255,255,0.05);
+  padding: 0 4px;
+  border-radius: 3px;
+}
+.ls-note { font-size: 10.5px; color: var(--ls-text-mute); line-height: 1.55; margin: 4px 0 10px 2px; }
+
 ";
 
 
@@ -1273,12 +1456,12 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
 
         b.OpenElement(_seq++, "div");
         b.AddAttribute(_seq++, "class", "ls-title");
-        b.AddContent(_seq++, "灵枢 · OpenAI语言模型报错自动切换");
+        b.AddContent(_seq++, "灵枢 · 语言模型路由");
         b.CloseElement();
 
         b.OpenElement(_seq++, "div");
         b.AddAttribute(_seq++, "class", "ls-title-sub");
-        b.AddContent(_seq++, "—  通  道  ·  容  灾  ·  思  维  —");
+        b.AddContent(_seq++, "—  切  换  ·  容  灾  ·  多  模  态  —");
         b.CloseElement();
 
         b.OpenElement(_seq++, "div");
@@ -1289,85 +1472,27 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
         // 特性条（装饰，非业务文案）
         b.OpenElement(_seq++, "div");
         b.AddAttribute(_seq++, "class", "ls-feature-strip");
-        FeatureChip(b, "多路圣渠");
+        FeatureChip(b, "多路渠道");
         FeatureChip(b, "自动容灾");
-        FeatureChip(b, "思维链");
-        FeatureChip(b, "一语切换");
-        FeatureChip(b, "模型探测");
+        FeatureChip(b, "智能思考");
+        FeatureChip(b, "一句话切换");
+        FeatureChip(b, "多模态");
         b.CloseElement();
 
-        // 说明（圣谕碑）
-        b.OpenElement(_seq++, "div");
-        b.AddAttribute(_seq++, "class", "ls-alert");
-
-        b.OpenElement(_seq++, "div");
-        b.AddAttribute(_seq++, "class", "ls-alert-header");
-        b.OpenElement(_seq++, "span");
-        b.AddAttribute(_seq++, "class", "ls-alert-header-icon");
-        b.AddContent(_seq++, "✦");
-        b.CloseElement();
-        b.OpenElement(_seq++, "span");
-        b.AddAttribute(_seq++, "class", "ls-alert-header-title");
-        b.AddContent(_seq++, "灵枢圣谕");
-        b.CloseElement();
-        b.OpenElement(_seq++, "span");
-        b.AddAttribute(_seq++, "class", "ls-alert-header-line");
-        b.CloseElement();
-        b.CloseElement();
-
-        b.OpenElement(_seq++, "div");
-        b.AddAttribute(_seq++, "class", "ls-alert-body");
-        AlertLine(b, "✧", "替换框架内置 OpenAI 语言模型，支持多路文本模型自动容灾切换、拖动/按钮排序与自由增删渠道组", false);
-        AlertLine(b, "✧", "遇到 HTTP 429/402/5xx 错误或响应体包含指定关键字时，自动切换到下一组渠道重试", false);
-        AlertLine(b, "✧", "同时支持 reasoning_content 等 SSE 思维链流的自动转换", false);
-        AlertLine(b, "✧", "原生多模态（对齐官方 OpenAI 4.5.0）：每组可独立开启「原生多模态」（图片/视频）与「音频输入」，AI 可用 LoadImage/LoadVideo/LoadAudio 查看", false);
-        AlertLine(b, "◈", "使用前请在角色配置中禁用 OpenAILanguageModel，启用本模块", true);
-        b.CloseElement();
-
-        b.CloseElement();
+        // 唯一强提醒（其余说明统一收进底部「使用帮助」，首屏不再堆文字）
+        RequirementBanner(b);
 
         Configuration.EnsureGroups();
         EnsureDetectArrays();
         int[] order = LanguageModelRouter.GetGroupOrder(Configuration);
 
-        // === 手动切换（置顶：最常用的操作）===
-        b.OpenElement(_seq++, "div");
-        b.AddAttribute(_seq++, "class", "ls-section");
-        SectionTitle(b, "手动切换");
-
-        b.OpenElement(_seq++, "div");
-        b.AddAttribute(_seq++, "class", "ls-status-row");
-        b.AddContent(_seq++, $"当前状态：{GetActiveGroupLabel()}");
-        b.OpenElement(_seq++, "span");
-        b.AddAttribute(_seq++, "class", Configuration.ForcedGroupIndex < 0 ? "ls-badge ls-badge-on" : "ls-badge ls-badge-active");
-        b.AddContent(_seq++, Configuration.ForcedGroupIndex < 0 ? "自动容灾" : "强制锁定");
-        b.CloseElement();
-        b.CloseElement();
-
-        b.OpenElement(_seq++, "div");
-        b.AddAttribute(_seq++, "class", "ls-btn-row");
-
-        int forcedIdx = Configuration.ForcedGroupIndex;
-        for (int di = 0; di < order.Length; di++)
-        {
-            int group = order[di];
-            string name = LanguageModelRouter.GetGroupName(group, Configuration);
-            string mainMark = di == 0 ? " ★主" : "";
-            string btnLabel = string.IsNullOrWhiteSpace(name) ? $"第{group + 1}组{mainMark}" : $"第{group + 1}组({name}){mainMark}";
-            bool configured = IsGroupConfigured(group);
-            AddSwitchBtn(b, btnLabel, forcedIdx == group, configured, () => SwitchTo(group));
-        }
-        // 返回自动容灾
-        AddSwitchBtn(b, "自动容灾", forcedIdx < 0, true, () => SwitchTo(-1));
-
-        b.CloseElement();
-        AddHint(b, "点击按钮切换渠道，也可在聊天中告诉桌宠「切换到第二组」或按名称「切换到 deepseek」，AI 会自动切换。配置保存后即刻生效，无需重新加载模块。");
-        b.CloseElement();
+        // === 概览 + 切换（首屏只放最常用的信息与操作）===
+        HeroCard(b, order);
 
         // === 渠道组（可增删，拖动/按钮排序，最上方为主组）===
+        BlockTitle(b, "渠道组", "最上方为主渠道 · 失败按顺序往下试");
         b.OpenElement(_seq++, "div");
         b.AddAttribute(_seq++, "class", "ls-groups");
-        AddHint(b, "调整渠道顺序：按住每组卡片左上角的「⠿」手柄拖动，或点击卡片右侧的「↑ / ↓」按钮把该组前移/后移。排在最上方的组即为主渠道（优先使用），容灾按从上到下的顺序依次尝试。可点击「添加渠道」新增组、展开卡片后删除组。");
         for (int di = 0; di < order.Length; di++)
             GroupCard(b, di);
 
@@ -1393,32 +1518,19 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
         b.CloseElement();
         b.CloseElement();
 
-        // 圣印分隔
-        SealDivider(b);
-
-        // === 容灾设置 ===
-        b.OpenElement(_seq++, "div");
-        b.AddAttribute(_seq++, "class", "ls-section");
-        SectionTitle(b, "容灾设置");
+        // === 容灾与思考 ===
+        BlockTitle(b, "容灾与思考", "默认设置即可，进阶项已折叠");
         AutoFailoverToggle(b);
         AddThinkingAdvanced(b);
         AddDisasterAdvanced(b);
-        b.CloseElement();
 
-        // === 安全设置（低频，置于底部）===
-        b.OpenElement(_seq++, "div");
-        b.AddAttribute(_seq++, "class", "ls-section");
-        SectionTitle(b, "安全设置");
+        // === 安全 ===
+        BlockTitle(b, "安全");
         AddEncryptionToggle(b);
         AddSslToggle(b);
-        b.CloseElement();
 
-        // === 使用说明 ===
-        b.OpenElement(_seq++, "div");
-        b.AddAttribute(_seq++, "class", "ls-section");
-        SectionTitle(b, "使用说明");
-        AddHint(b, "1. 在角色配置中禁用「OpenAI语言模型」，启用「灵枢 - OpenAI语言模型报错自动切换」\n2. 调整渠道顺序：拖动卡片左上角「⠿」手柄，或点击卡片右侧「↑/↓」按钮前移/后移；排最上方的组即为主渠道，必须填写 Endpoint、Model ID 和 API Key\n3. 其余组为备用渠道，遇到 429/402/5xx 错误时按从上到下顺序自动切换\n4. 组名称可用于 AI 识别渠道，如对桌宠说「切换到 deepseek」即可对应切换\n5. 可点击「添加渠道组」自由新增，展开备用组卡片后点「删除」移除（主组不可删，至少保留 1 组）\n6. 配置保存后即刻生效，无需重新加载模块\n7. （可选）多模态：在支持多模态输入的模型组开启「原生多模态」（图片/视频，如图文模型 gpt-4o）或「音频输入」（如支持音频的模型），媒体将原生随对话发送，AI 可调用 LoadImage/LoadVideo/LoadAudio 查看；纯文本模型组请保持关闭。开启后需保存配置并重载一次本插件以完成 Load 系函数注册");
-        b.CloseElement();
+        // === 使用帮助（默认收起，需要时再看）===
+        HelpSection(b);
     }
 
     void FeatureChip(RenderTreeBuilder b, string text)
@@ -1429,29 +1541,215 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
         b.CloseElement();
     }
 
-    void AlertLine(RenderTreeBuilder b, string mark, string text, bool warn)
+    // ==================== 布局辅助（排版优化） ====================
+
+    /// <summary>首屏唯一强提醒：使用前必须做的配置动作。</summary>
+    void RequirementBanner(RenderTreeBuilder b)
     {
         b.OpenElement(_seq++, "div");
-        b.AddAttribute(_seq++, "class", warn ? "ls-alert-line ls-alert-line-warn" : "ls-alert-line");
+        b.AddAttribute(_seq++, "class", "ls-requirement");
         b.OpenElement(_seq++, "span");
-        b.AddAttribute(_seq++, "class", "ls-alert-mark");
-        b.AddContent(_seq++, mark);
+        b.AddAttribute(_seq++, "class", "ls-requirement-icon");
+        b.AddContent(_seq++, "✦");
         b.CloseElement();
         b.OpenElement(_seq++, "span");
-        b.AddAttribute(_seq++, "class", "ls-alert-text");
-        b.AddContent(_seq++, text);
+        b.AddContent(_seq++, "使用前：在角色配置里关闭「OpenAI语言模型」，改为勾选本模块。");
         b.CloseElement();
         b.CloseElement();
     }
 
-    void SealDivider(RenderTreeBuilder b)
+    /// <summary>概览卡：当前渠道 + 三项状态 + 一键切换。</summary>
+    void HeroCard(RenderTreeBuilder b, int[] order)
+    {
+        LanguageModelRouterConfig cfg = Configuration!;
+        bool auto = cfg.ForcedGroupIndex < 0;
+        int total = cfg.Groups.Count;
+        int configured = order.Count(g => IsGroupConfigured(g));
+
+        b.OpenElement(_seq++, "div");
+        b.AddAttribute(_seq++, "class", "ls-hero");
+
+        b.OpenElement(_seq++, "div");
+        b.AddAttribute(_seq++, "class", "ls-hero-row");
+        b.OpenElement(_seq++, "span");
+        b.AddAttribute(_seq++, "class", "ls-hero-kicker");
+        b.AddContent(_seq++, auto ? "当前渠道 · 自动" : "当前渠道 · 已锁定");
+        b.CloseElement();
+        b.OpenElement(_seq++, "span");
+        b.AddAttribute(_seq++, "class", "ls-hero-title");
+        b.AddContent(_seq++, GetActiveGroupLabel());
+        b.CloseElement();
+        b.CloseElement();
+
+        b.OpenElement(_seq++, "div");
+        b.AddAttribute(_seq++, "class", "ls-hero-desc");
+        b.AddContent(_seq++, auto
+            ? "从最上面的渠道开始尝试，失败自动换下一组，不用你操心。"
+            : "已固定使用这一组；该组失败时仍会自动切到备用渠道（需开启自动容灾）。");
+        b.CloseElement();
+
+        b.OpenElement(_seq++, "div");
+        b.AddAttribute(_seq++, "class", "ls-hero-metrics");
+        Metric(b, "渠道组", $"{configured} / {total} 已配置");
+        Metric(b, "模式", auto ? "自动容灾" : $"锁定第 {cfg.ForcedGroupIndex + 1} 组");
+        Metric(b, "思考过程", cfg.ShowThinkingChain ? "显示" : "隐藏");
+        b.CloseElement();
+
+        b.OpenElement(_seq++, "div");
+        b.AddAttribute(_seq++, "class", "ls-btn-row");
+        b.AddAttribute(_seq++, "style", "margin-top:12px; margin-bottom:0;");
+        for (int di = 0; di < order.Length; di++)
+        {
+            int group = order[di];
+            string name = LanguageModelRouter.GetGroupName(group, Configuration);
+            string mainMark = di == 0 ? " ★主" : "";
+            string btnLabel = string.IsNullOrWhiteSpace(name) ? $"第{group + 1}组{mainMark}" : $"第{group + 1}组({name}){mainMark}";
+            AddSwitchBtn(b, btnLabel, cfg.ForcedGroupIndex == group, IsGroupConfigured(group), () => SwitchTo(group));
+        }
+        AddSwitchBtn(b, "自动容灾", cfg.ForcedGroupIndex < 0, true, () => SwitchTo(-1));
+        b.CloseElement();
+
+        b.OpenElement(_seq++, "div");
+        b.AddAttribute(_seq++, "class", "ls-note");
+        b.AddContent(_seq++, "也可以直接对桌宠说「切换到第2组」或「切到硅基」，AI 会自己换。");
+        b.CloseElement();
+
+        b.CloseElement();
+    }
+
+    void Metric(RenderTreeBuilder b, string key, string value)
     {
         b.OpenElement(_seq++, "div");
-        b.AddAttribute(_seq++, "class", "ls-seal");
-        b.OpenElement(_seq++, "span");
-        b.AddAttribute(_seq++, "class", "ls-seal-icon");
-        b.AddContent(_seq++, "✦");
+        b.AddAttribute(_seq++, "class", "ls-metric");
+        b.OpenElement(_seq++, "div");
+        b.AddAttribute(_seq++, "class", "ls-metric-k");
+        b.AddContent(_seq++, key);
         b.CloseElement();
+        b.OpenElement(_seq++, "div");
+        b.AddAttribute(_seq++, "class", "ls-metric-v");
+        b.AddContent(_seq++, value);
+        b.CloseElement();
+        b.CloseElement();
+    }
+
+    /// <summary>区块标题：主标题 + 可选的一句右侧注解，替代整段说明文字。</summary>
+    void BlockTitle(RenderTreeBuilder b, string name, string note = "")
+    {
+        b.OpenElement(_seq++, "div");
+        b.AddAttribute(_seq++, "class", "ls-block-title");
+        b.OpenElement(_seq++, "span");
+        b.AddAttribute(_seq++, "class", "ls-block-name");
+        b.AddContent(_seq++, name);
+        b.CloseElement();
+        if (string.IsNullOrEmpty(note) == false)
+        {
+            b.OpenElement(_seq++, "span");
+            b.AddAttribute(_seq++, "class", "ls-block-note");
+            b.AddContent(_seq++, note);
+            b.CloseElement();
+        }
+        b.CloseElement();
+    }
+
+    /// <summary>紧凑开关：标题 + 一行说明，替代"复选框 + 长句"的写法。</summary>
+    void CompactSwitch(RenderTreeBuilder b, string id, bool value, Action<bool> onChange, string title, string desc)
+    {
+        b.OpenElement(_seq++, "div");
+        b.AddAttribute(_seq++, "class", "ls-toggle-compact");
+        b.OpenElement(_seq++, "input");
+        b.AddAttribute(_seq++, "type", "checkbox");
+        b.AddAttribute(_seq++, "id", id);
+        b.AddAttribute(_seq++, "checked", value);
+        b.AddAttribute(_seq++, "onchange", EventCallback.Factory.Create<ChangeEventArgs>(this, e =>
+        {
+            onChange(e.Value is bool bv ? bv : !value);
+            StateHasChanged();
+        }));
+        b.CloseElement();
+
+        b.OpenElement(_seq++, "label");
+        b.AddAttribute(_seq++, "for", id);
+        b.OpenElement(_seq++, "div");
+        b.AddAttribute(_seq++, "class", "ls-tc-title");
+        b.AddContent(_seq++, title);
+        b.CloseElement();
+        b.OpenElement(_seq++, "div");
+        b.AddAttribute(_seq++, "class", "ls-tc-desc");
+        b.AddContent(_seq++, desc);
+        b.CloseElement();
+        b.CloseElement();
+        b.CloseElement();
+    }
+
+    /// <summary>
+    /// 受控折叠区：按钮 + div 实现（不用原生 details），状态存于 _foldStates，
+    /// 任何 StateHasChanged 重渲染后都保持原展开状态。
+    /// </summary>
+    void Fold(RenderTreeBuilder b, string key, string title, Action renderContent)
+    {
+        bool open = _foldStates.TryGetValue(key, out bool saved) && saved;
+
+        b.OpenElement(_seq++, "div");
+        b.AddAttribute(_seq++, "class", open ? "ls-fold ls-fold-open" : "ls-fold");
+
+        b.OpenElement(_seq++, "button");
+        b.AddAttribute(_seq++, "type", "button");
+        b.AddAttribute(_seq++, "class", "ls-fold-btn");
+        b.AddAttribute(_seq++, "onclick", EventCallback.Factory.Create(this, () =>
+        {
+            _foldStates[key] = !open;
+            StateHasChanged();
+        }));
+        b.OpenElement(_seq++, "span");
+        b.AddAttribute(_seq++, "class", "ls-fold-arrow");
+        b.AddContent(_seq++, "▶");
+        b.CloseElement();
+        b.AddContent(_seq++, title);
+        b.CloseElement();
+
+        if (open)
+        {
+            b.OpenElement(_seq++, "div");
+            b.AddAttribute(_seq++, "class", "ls-fold-body");
+            renderContent();
+            b.CloseElement();
+        }
+
+        b.CloseElement();
+    }
+
+    /// <summary>使用帮助：给第一次使用的用户看的 5 步 + 可展开的进阶说明。</summary>
+    void HelpSection(RenderTreeBuilder b)
+    {
+        Fold(b, "help", "使用帮助（第一次用点这里）", () =>
+        {
+            b.OpenElement(_seq++, "ol");
+            b.AddAttribute(_seq++, "class", "ls-help-list");
+            HelpItem(b, "在角色配置里关闭「OpenAI语言模型」，勾选本模块（灵枢）。");
+            HelpItem(b, "最上面一组必填三项：API 地址、模型 ID、API Key；点「探测」可自动拉取模型列表。");
+            HelpItem(b, "想容灾就再加一组、排在下面：失败时按从上到下的顺序自动换组。");
+            HelpItem(b, "对桌宠说「切换到第2组」「切到硅基」，或点上面的按钮手动切换。");
+            HelpItem(b, "需要看图：在支持图片的组里打开「原生多模态」，保存配置后重载一次本插件。");
+            b.CloseElement();
+
+            Fold(b, "help-advanced", "进阶说明", () =>
+            {
+                b.OpenElement(_seq++, "ul");
+                b.AddAttribute(_seq++, "class", "ls-help-list");
+                HelpItem(b, "什么时候换组：限流（429）、额度用完（401/403/积分不足）、服务器错误（5xx）、超时、网络不通，或返回内容命中错误关键字。");
+                HelpItem(b, "最上面的组是主渠道；拖动左上角「⠿」或点卡片右侧「↑↓」都能调整顺序。");
+                HelpItem(b, "智能思考：开启后平时不思考（更快更省），需要调用工具等复杂任务时自动思考。");
+                HelpItem(b, "Extra Headers / Extra Body 是 JSON，例如 {\"temperature\":0.7}，留空即不发送。");
+                HelpItem(b, "API Key 默认用 Windows 加密保存，只有当前用户能解密；关闭加密则明文存于配置文件，便于迁移。");
+                b.CloseElement();
+            });
+        });
+    }
+
+    void HelpItem(RenderTreeBuilder b, string text)
+    {
+        b.OpenElement(_seq++, "li");
+        b.AddContent(_seq++, text);
         b.CloseElement();
     }
 
@@ -1497,77 +1795,89 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
         if (g < 0 || g >= cfg.Groups.Count) return;
         var ch = cfg.Groups[g];
 
+        // ── 连接（新手只需要填这一块）──
         b.OpenElement(_seq++, "div");
-        b.AddAttribute(_seq++, "class", "ls-section");
-        SectionTitle(b, isPrimary ? $"主渠道（第{g + 1}组，必填）" : $"第{g + 1}组配置");
-
+        b.AddAttribute(_seq++, "class", "ls-subgroup ls-subgroup-first");
         b.OpenElement(_seq++, "div");
-        b.AddAttribute(_seq++, "class", "ls-status-row");
-        b.OpenElement(_seq++, "span");
-        b.AddAttribute(_seq++, "class", IsGroupConfigured(g) ? "ls-badge ls-badge-on" : "ls-badge ls-badge-off");
-        b.AddContent(_seq++, IsGroupConfigured(g) ? "✦ 已配置" : "○ 未配置");
-        b.CloseElement();
+        b.AddAttribute(_seq++, "class", "ls-subgroup-title");
+        b.AddContent(_seq++, "连 接");
         b.CloseElement();
 
-        AddInput(b, "组名称（可选，供 AI 识别）", ch.GroupName ?? "", v => ch.GroupName = v);
-        AddInput(b, "Endpoint", ch.Endpoint ?? "", v => ch.Endpoint = v);
-        AddHint(b, "API 端点 URL，如 https://api.openai.com/v1");
-        AddInput(b, "Model ID", ch.ModelId ?? "", v => ch.ModelId = v);
-        AddHint(b, "模型标识，如 gpt-4o、deepseek-chat");
+        AddInput(b, "组名称（可留空，供 AI 识别）", ch.GroupName ?? "", v => ch.GroupName = v);
+        AddInput(b, "API 地址", ch.Endpoint ?? "", v => ch.Endpoint = v);
+        Note(b, "例如 https://api.openai.com/v1");
 
-        ProbeSection(b, g);
+        AddInput(b, "模型 ID", ch.ModelId ?? "", v => ch.ModelId = v);
 
         // API Key：加密开关开启时以 DPAPI 密文存储（显示解密、输入加密）；关闭时与官方插件一致明文保存。
-        // GroupConfig 开头的 EnsureGroups 已按开关统一转换存储形态，UnprotectSecret 对明文原样返回，读取恒安全。
+        // EnsureGroups 已按开关统一转换存储形态，UnprotectSecret 对明文原样返回，读取恒安全。
         AddPassword(b, "API Key", LanguageModelRouterConfig.UnprotectSecret(ch.ApiKey),
             v => ch.ApiKey = cfg.EncryptApiKeys
                 ? (LanguageModelRouterConfig.ProtectSecret(v) ?? "")
                 : v);
-        AddHint(b, cfg.EncryptApiKeys
-            ? "已使用 Windows DPAPI 加密存储，仅当前系统用户可解密"
-            : "明文保存于配置文件（与官方语言模型插件一致），请注意保护配置文件");
+        Note(b, cfg.EncryptApiKeys ? "已用 Windows 加密保存，仅本机可解密" : "以明文保存，请注意保护配置文件");
 
-        // 原生多模态（每组独立开关，对齐官方 OpenAI 语言模型多模态支持）
-        AddToggleRow(b, $"nativeMultimodal_{g}", ch.EnableNativeMultimodal,
+        // 探测放在 Key 之后：探测需要鉴权，先填完三项再点才不至于报未授权
+        ProbeSection(b, g);
+        b.CloseElement();
+
+        // ── 能力 ──
+        b.OpenElement(_seq++, "div");
+        b.AddAttribute(_seq++, "class", "ls-subgroup");
+        b.OpenElement(_seq++, "div");
+        b.AddAttribute(_seq++, "class", "ls-subgroup-title");
+        b.AddContent(_seq++, "能 力");
+        b.CloseElement();
+
+        CompactSwitch(b, $"nativeMultimodal_{g}", ch.EnableNativeMultimodal,
             v => ch.EnableNativeMultimodal = v,
-            "原生多模态（开启后本组按 OpenAI 原生 content parts：image_url / video_url 把图片、视频随对话发送给模型）");
-        AddHint(b, "仅供支持原生多模态输入的模型开启（如图文模型 gpt-4o 系列）。纯文本模型请保持关闭（默认），避免把媒体塞给不支持的上游。\n开启后：① 媒体消息即刻以原生格式随请求发送（无需重载）；② 同时向 AI 注册 LoadImage / LoadVideo 查看函数（常驻文档，需保存配置后重载一次本插件生效）。");
-
-        // 音频输入（每组独立开关，对齐官方 4.5.0 新增的音频多模态）
-        AddToggleRow(b, $"audioMultimodal_{g}", ch.EnableAudioMultimodal,
+            "原生多模态", "图片 / 视频直接发给模型看（需模型本身支持，纯文本模型请关闭）");
+        CompactSwitch(b, $"audioMultimodal_{g}", ch.EnableAudioMultimodal,
             v => ch.EnableAudioMultimodal = v,
-            "音频输入（开启后本组按 OpenAI 原生 input_audio 把音频随对话发送给模型）");
-        AddHint(b, "仅供支持音频输入的模型开启（多数模型不支持，请保持关闭）。开启后 AI 可调用 LoadAudio 查看音频（常驻文档，需保存配置后重载一次本插件生效）。");
-
-        // 智能思考/非思考切换（每组独立开关）
-        AddToggleRow(b, $"smartThinking_{g}", ch.SmartThinkingEnabled,
+            "音频输入", "把音频直接发给模型听（少数模型支持，默认关闭）");
+        CompactSwitch(b, $"smartThinking_{g}", ch.SmartThinkingEnabled,
             v => ch.SmartThinkingEnabled = v,
-            "智能思考/非思考切换（本组独立）：开启后本组默认非思考（回复更快、更省 token），AI 需调用工具等复杂任务时自动切回思考");
-        AddHint(b, "每组独立生效：开启的组走「默认非思考」策略，未开启的组恒思考（沿用本组自己的 Reasoning Effort / Extra Body）。「忽略历史隐式功能占用」「思考触发关键词」为全局设置，对所有开启本开关的组生效。");
+            "智能思考（本组独立）", "平时不思考，更快更省；调用工具等复杂任务时自动思考");
+        b.CloseElement();
 
-        AddInput(b, "Reasoning Effort", ch.ReasoningEffort ?? "", v => ch.ReasoningEffort = string.IsNullOrWhiteSpace(v) ? null : v);
-        AddHint(b, "推理强度，如 low / medium / high，留空则不设置");
-        AddInput(b, "Temperature（采样温度）", FormatTemperature(ch.Temperature), v => ch.Temperature = ParseTemperature(v));
-        AddHint(b, "采样温度：越低越严谨、越高越发散（官方 OpenAI 语言模型默认 0.6）；留空则不发送该参数，使用服务端默认值。Extra Body 里同名字段会覆盖此项");
-        AddInput(b, "Extra Headers (JSON)", ch.ExtraHeaders ?? "", v => ch.ExtraHeaders = string.IsNullOrWhiteSpace(v) ? null : v);
-        AddHint(b, "额外请求头，JSON 格式，如 {\"X-Custom\":\"value\"}");
-        AddInput(b, "Extra Body (JSON)", ch.ExtraBody ?? "", v => ch.ExtraBody = string.IsNullOrWhiteSpace(v) ? null : v);
-        AddHint(b, "额外请求体，JSON 格式，如 {\"temperature\":0.7}");
+        // ── 高级参数（默认收起，避免干扰新手）──
+        Fold(b, $"group:{g}:adv", "更多模型参数", () =>
+        {
+            AddInput(b, "Reasoning Effort", ch.ReasoningEffort ?? "", v => ch.ReasoningEffort = string.IsNullOrWhiteSpace(v) ? null : v);
+            Note(b, "推理强度：low / medium / high，留空则不发送");
 
-        AddInput(b, "Extra Body NotThinking (JSON)", ch.ExtraBodyNotThinking ?? "", v => ch.ExtraBodyNotThinking = string.IsNullOrWhiteSpace(v) ? null : v);
-        AddHint(b, "非思考模式的额外请求体，JSON 格式；留空则默认发送 {\"thinking\":{\"type\":\"disabled\"}}，明确要求模型关闭思考");
+            AddInput(b, "Temperature（采样温度）", FormatTemperature(ch.Temperature), v => ch.Temperature = ParseTemperature(v));
+            Note(b, "越低越严谨、越高越发散（常用 0.6）；留空用服务端默认值");
 
+            AddInput(b, "Extra Headers（JSON）", ch.ExtraHeaders ?? "", v => ch.ExtraHeaders = string.IsNullOrWhiteSpace(v) ? null : v);
+            Note(b, "额外请求头，如 {\"X-Custom\":\"value\"}");
+
+            AddInput(b, "Extra Body（JSON，思考模式）", ch.ExtraBody ?? "", v => ch.ExtraBody = string.IsNullOrWhiteSpace(v) ? null : v);
+            Note(b, "思考模式下附加的请求体，如 {\"temperature\":0.7}");
+
+            AddInput(b, "Extra Body（JSON，非思考模式）", ch.ExtraBodyNotThinking ?? "", v => ch.ExtraBodyNotThinking = string.IsNullOrWhiteSpace(v) ? null : v);
+            Note(b, "留空则默认发送 {\"thinking\":{\"type\":\"disabled\"}}，明确要求模型关闭思考");
+        });
+    }
+
+    /// <summary>输入项下方的一行浅色注解（比 AddHint 更轻，减少视觉噪音）。</summary>
+    void Note(RenderTreeBuilder b, string text)
+    {
+        b.OpenElement(_seq++, "div");
+        b.AddAttribute(_seq++, "class", "ls-note");
+        b.AddContent(_seq++, text);
         b.CloseElement();
     }
 
     // ==================== 拖动排序 ====================
 
-    /// <summary>渲染一张可拖动的渠道组卡片（displayIndex 为显示位置，0 = 主组）。主组与备用组均可折叠。</summary>
+    /// <summary>渲染一张渠道组卡片：卡片头一眼看懂「第几组 / 名称 / 模型 / 是否就绪」，点击头部展开配置。</summary>
     void GroupCard(RenderTreeBuilder b, int displayIndex)
     {
         int slot = GetDisplaySlot(displayIndex);
         bool isPrimary = displayIndex == 0;
         bool isCurrent = IsCurrentSlot(slot);
+        bool configured = IsGroupConfigured(slot);
 
         // 折叠状态由 _groupOpenStates 受控：未记录时按"主组默认展开、备用组默认收起"
         var cardConfig = Configuration!;
@@ -1575,6 +1885,10 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
         bool groupOpen = channel != null && _groupOpenStates.TryGetValue(channel, out bool savedOpen)
             ? savedOpen
             : isPrimary;
+
+        string groupName = channel?.GroupName ?? "";
+        string modelId = channel?.ModelId ?? "";
+        string host = Uri.TryCreate(channel?.Endpoint, UriKind.Absolute, out Uri? endpointUri) ? endpointUri.Host : "";
 
         b.OpenElement(_seq++, "div");
         b.AddAttribute(_seq++, "class", _dragSource == displayIndex ? "ls-group-card ls-group-card-dragging" : "ls-group-card");
@@ -1587,9 +1901,15 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
         b.AddAttribute(_seq++, "ondrop", EventCallback.Factory.Create<DragEventArgs>(this, e => DropGroup(displayIndex)));
         b.AddEventPreventDefaultAttribute(_seq++, "ondrop", true);
 
-        // 卡片头：拖拽手柄 + 标题 + 徽标 + 删除按钮
+        // ── 卡片头（整行可点击展开/收起）──
         b.OpenElement(_seq++, "div");
-        b.AddAttribute(_seq++, "class", "ls-group-card-head");
+        b.AddAttribute(_seq++, "class", "ls-card-head2");
+        b.AddAttribute(_seq++, "onclick", EventCallback.Factory.Create<MouseEventArgs>(this, e =>
+        {
+            if (channel == null) return;
+            _groupOpenStates[channel] = !groupOpen;
+            StateHasChanged();
+        }));
 
         // 拖拽手柄（卡片内唯一可拖动元素）：按住此按钮才发起拖动排序
         b.OpenElement(_seq++, "span");
@@ -1598,26 +1918,28 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
         b.AddAttribute(_seq++, "draggable", "true");
         b.AddAttribute(_seq++, "ondragstart", EventCallback.Factory.Create<DragEventArgs>(this, e => _dragSource = displayIndex));
         b.AddAttribute(_seq++, "ondragend", EventCallback.Factory.Create<DragEventArgs>(this, e => { _dragSource = null; StateHasChanged(); }));
+        b.AddAttribute(_seq++, "onclick", EventCallback.Factory.Create<MouseEventArgs>(this, e => { }));
+        b.AddEventStopPropagationAttribute(_seq++, "onclick", true);
         b.AddContent(_seq++, "⠿");
         b.CloseElement();
 
         b.OpenElement(_seq++, "span");
-        b.AddAttribute(_seq++, "class", "ls-group-card-title");
-        b.AddContent(_seq++, GetGroupCardTitle(slot));
+        b.AddAttribute(_seq++, "class", "ls-card-index");
+        b.AddContent(_seq++, isPrimary ? "主组" : $"第{slot + 1}组");
         b.CloseElement();
 
-        if (isPrimary)
-        {
-            b.OpenElement(_seq++, "span");
-            b.AddAttribute(_seq++, "class", "ls-badge ls-badge-main");
-            b.AddContent(_seq++, "★ 主组");
-            b.CloseElement();
-        }
+        b.OpenElement(_seq++, "span");
+        b.AddAttribute(_seq++, "class", "ls-card-name");
+        b.AddContent(_seq++, string.IsNullOrWhiteSpace(groupName)
+            ? (isPrimary ? "未命名主渠道" : "未命名渠道")
+            : groupName);
+        b.CloseElement();
+
         if (isCurrent)
         {
             b.OpenElement(_seq++, "span");
             b.AddAttribute(_seq++, "class", "ls-badge ls-badge-active");
-            b.AddContent(_seq++, "当前通道");
+            b.AddContent(_seq++, "当前");
             b.CloseElement();
         }
         if (IsNativeEnabledSlot(slot))
@@ -1628,7 +1950,7 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
             b.CloseElement();
         }
 
-        // 上移/下移按钮：与拖动等价的排序方式（往前一位 / 往后一位），首位禁用上移、末位禁用下移
+        // 上移/下移按钮：与拖动等价的排序方式，首位禁用上移、末位禁用下移
         int groupCount = Configuration!.Groups.Count;
         b.OpenElement(_seq++, "button");
         b.AddAttribute(_seq++, "type", "button");
@@ -1637,6 +1959,7 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
         if (displayIndex <= 0)
             b.AddAttribute(_seq++, "disabled", true);
         b.AddAttribute(_seq++, "onclick", EventCallback.Factory.Create(this, () => MoveGroup(displayIndex, -1)));
+        b.AddEventStopPropagationAttribute(_seq++, "onclick", true);
         b.AddContent(_seq++, "↑");
         b.CloseElement();
 
@@ -1647,23 +1970,62 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
         if (displayIndex >= groupCount - 1)
             b.AddAttribute(_seq++, "disabled", true);
         b.AddAttribute(_seq++, "onclick", EventCallback.Factory.Create(this, () => MoveGroup(displayIndex, 1)));
+        b.AddEventStopPropagationAttribute(_seq++, "onclick", true);
         b.AddContent(_seq++, "↓");
         b.CloseElement();
-        b.CloseElement();
 
-        // 卡片内容：主组与备用组均使用可折叠卡片（主组默认展开，备用组可删除）
-        AddCollapsibleGroup(b,
-            isPrimary ? $"主渠道（第{slot + 1}组，必填）" : "展开配置",
-            groupOpen,
-            channel!,
-            () => GroupConfig(b, slot, isPrimary),
-            canRemove: !isPrimary,
-            onRemove: () =>
+        // 删除（仅备用组）：放在头部，避免再单独占一行
+        if (isPrimary == false)
+        {
+            b.OpenElement(_seq++, "button");
+            b.AddAttribute(_seq++, "type", "button");
+            b.AddAttribute(_seq++, "class", "ls-btn-remove");
+            b.AddAttribute(_seq++, "style", "padding:1px 9px; font-size:11px;");
+            b.AddAttribute(_seq++, "title", "删除这一组");
+            b.AddAttribute(_seq++, "onclick", EventCallback.Factory.Create(this, () =>
             {
+                if (channel != null)
+                    _groupOpenStates.Remove(channel);
                 Configuration!.RemoveGroup(slot);
                 EnsureDetectArrays();
                 StateHasChanged();
-            });
+            }));
+            b.AddEventStopPropagationAttribute(_seq++, "onclick", true);
+            b.AddContent(_seq++, "删除");
+            b.CloseElement();
+        }
+
+        b.OpenElement(_seq++, "span");
+        b.AddAttribute(_seq++, "class", groupOpen ? "ls-chevron ls-chevron-open" : "ls-chevron");
+        b.AddContent(_seq++, "▶");
+        b.CloseElement();
+        b.CloseElement();
+
+        // ── 副信息行：折叠时也能一眼判断这组能否用 ──
+        b.OpenElement(_seq++, "div");
+        b.AddAttribute(_seq++, "class", "ls-card-meta");
+        b.OpenElement(_seq++, "span");
+        b.AddAttribute(_seq++, "class", configured ? "ls-dot ls-dot-ok" : "ls-dot ls-dot-off");
+        b.CloseElement();
+        b.AddContent(_seq++, configured ? "已就绪" : "未配置");
+        if (string.IsNullOrWhiteSpace(modelId) == false)
+        {
+            b.OpenElement(_seq++, "code");
+            b.AddContent(_seq++, modelId);
+            b.CloseElement();
+        }
+        if (string.IsNullOrWhiteSpace(host) == false)
+            b.AddContent(_seq++, "· " + host);
+        b.CloseElement();
+
+        // ── 展开内容 ──
+        if (groupOpen)
+        {
+            b.OpenElement(_seq++, "div");
+            b.AddAttribute(_seq++, "class", "ls-details-content");
+            GroupConfig(b, slot, isPrimary);
+            b.CloseElement();
+        }
 
         b.CloseElement();
     }
@@ -1725,14 +2087,6 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
         return order[displayIndex];
     }
 
-    /// <summary>卡片标题：第 N 组（名称）</summary>
-    string GetGroupCardTitle(int slot)
-    {
-        string name = LanguageModelRouter.GetGroupName(slot, Configuration);
-        string baseTitle = $"第{slot + 1}组";
-        return string.IsNullOrWhiteSpace(name) ? baseTitle : $"{baseTitle}（{name}）";
-    }
-
     /// <summary>槽位是否为当前生效渠道（强制锁定优先，否则主组）</summary>
     bool IsCurrentSlot(int slot)
     {
@@ -1760,7 +2114,7 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
         b.AddAttribute(_seq++, "class", "ls-btn-probe-icon");
         b.AddContent(_seq++, "✧");
         b.CloseElement();
-        b.AddContent(_seq++, $"探测第{groupIndex + 1}组");
+        b.AddContent(_seq++, "探测可用模型");
         b.CloseElement();
 
         var result = _detectResults[groupIndex];
@@ -1836,180 +2190,91 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
 
     void AddEncryptionToggle(RenderTreeBuilder b)
     {
-        b.OpenElement(_seq++, "div");
-        b.AddAttribute(_seq++, "class", "ls-toggle-row");
-
-        b.OpenElement(_seq++, "input");
-        b.AddAttribute(_seq++, "type", "checkbox");
-        b.AddAttribute(_seq++, "id", "encryptKeyCheck");
-        b.AddAttribute(_seq++, "checked", Configuration.EncryptApiKeys);
-        b.AddAttribute(_seq++, "onchange", EventCallback.Factory.Create<ChangeEventArgs>(this, e =>
-        {
-            bool next = e.Value is bool bv ? bv : !Configuration.EncryptApiKeys;
-            Configuration.EncryptApiKeys = next;
-            // 立即按新开关状态统一转换所有 Key（开启→密文，关闭→明文），随配置保存生效
-            Configuration.EnsureApiKeysProtected();
-            StateHasChanged();
-        }));
-        b.CloseElement();
-
-        b.OpenElement(_seq++, "label");
-        b.AddAttribute(_seq++, "for", "encryptKeyCheck");
-        b.AddContent(_seq++, "加密 API Key 存储（开启=Windows DPAPI 密文保存，仅当前系统用户可解密；关闭=明文保存于配置文件，与官方插件一致）");
-        b.CloseElement();
-        b.CloseElement();
-
-        AddHint(b, "切换后立即转换当前所有渠道的 Key 并随配置保存。明文模式下 Key 直接可见，便于跨机器迁移；开启加密后仅当前 Windows 用户可解密。");
+        CompactSwitch(b, "encryptKeyCheck", Configuration.EncryptApiKeys,
+            v =>
+            {
+                Configuration.EncryptApiKeys = v;
+                // 立即按新开关状态统一转换所有 Key（开启→密文，关闭→明文），随配置保存生效
+                Configuration.EnsureApiKeysProtected();
+            },
+            "加密保存 API Key",
+            "用 Windows 系统加密，只有当前用户能解密；关闭则明文保存，便于迁移");
     }
 
     void AddSslToggle(RenderTreeBuilder b)
     {
-        b.OpenElement(_seq++, "div");
-        b.AddAttribute(_seq++, "class", "ls-toggle-row");
-
-        b.OpenElement(_seq++, "input");
-        b.AddAttribute(_seq++, "type", "checkbox");
-        b.AddAttribute(_seq++, "id", "ignoreSslCheck");
-        b.AddAttribute(_seq++, "checked", Configuration.IgnoreSslCertificate);
-        b.AddAttribute(_seq++, "onchange", EventCallback.Factory.Create<ChangeEventArgs>(this, e =>
-        {
-            Configuration.IgnoreSslCertificate = e.Value is bool bv ? bv : !Configuration.IgnoreSslCertificate;
-            StateHasChanged();
-        }));
-        b.CloseElement();
-
-        b.OpenElement(_seq++, "label");
-        b.AddAttribute(_seq++, "for", "ignoreSslCheck");
-        b.AddContent(_seq++, "忽略 TLS 证书校验错误（默认开启，兼容自签名证书/证书异常的渠道）");
-        b.CloseElement();
-        b.CloseElement();
-
-        AddHint(b, "关闭后走系统证书校验（更安全，可防中间人攻击）；使用自签名证书或证书异常的渠道将无法连接，请在能正常访问的前提下尽量关闭。");
+        CompactSwitch(b, "ignoreSslCheck", Configuration.IgnoreSslCertificate,
+            v => Configuration.IgnoreSslCertificate = v,
+            "跳过证书校验",
+            "兼容自建 / 自签名证书渠道；公用渠道建议关闭（更安全）");
     }
 
     // ==================== Auto Failover Toggle ====================
 
     void AutoFailoverToggle(RenderTreeBuilder b)
     {
-        // 自动容灾
-        b.OpenElement(_seq++, "div");
-        b.AddAttribute(_seq++, "class", "ls-toggle-row");
+        CompactSwitch(b, "autoFailoverCheck", Configuration.AutoFailoverEnabled,
+            v => Configuration.AutoFailoverEnabled = v,
+            "自动容灾",
+            "遇到限流、额度用完、超时、网络不通时，自动换下一组渠道");
 
-        b.OpenElement(_seq++, "input");
-        b.AddAttribute(_seq++, "type", "checkbox");
-        b.AddAttribute(_seq++, "id", "autoFailoverCheck");
-        b.AddAttribute(_seq++, "checked", Configuration.AutoFailoverEnabled);
-        b.AddAttribute(_seq++, "onchange", EventCallback.Factory.Create<ChangeEventArgs>(this, e =>
-        {
-            Configuration.AutoFailoverEnabled = e.Value is bool bv ? bv : !Configuration.AutoFailoverEnabled;
-            StateHasChanged();
-        }));
-        b.CloseElement();
+        CompactSwitch(b, "priorityMainCheck", Configuration.PriorityMainChannel,
+            v => Configuration.PriorityMainChannel = v,
+            "优先主渠道",
+            "每次对话都先试主渠道，切换过程不打扰你（仅日志可见）");
 
-        b.OpenElement(_seq++, "label");
-        b.AddAttribute(_seq++, "for", "autoFailoverCheck");
-        b.AddContent(_seq++, "启用自动容灾（开启后无论切换到哪个组，遇错误时自动切换备用渠道）");
-        b.CloseElement();
-        b.CloseElement();
-
-        // 优先主渠道
-        b.OpenElement(_seq++, "div");
-        b.AddAttribute(_seq++, "class", "ls-toggle-row");
-
-        b.OpenElement(_seq++, "input");
-        b.AddAttribute(_seq++, "type", "checkbox");
-        b.AddAttribute(_seq++, "id", "priorityMainCheck");
-        b.AddAttribute(_seq++, "checked", Configuration.PriorityMainChannel);
-        b.AddAttribute(_seq++, "onchange", EventCallback.Factory.Create<ChangeEventArgs>(this, e =>
-        {
-            Configuration.PriorityMainChannel = e.Value is bool bv ? bv : !Configuration.PriorityMainChannel;
-            StateHasChanged();
-        }));
-        b.CloseElement();
-
-        b.OpenElement(_seq++, "label");
-        b.AddAttribute(_seq++, "for", "priorityMainCheck");
-        b.AddContent(_seq++, "优先主渠道（每次对话优先尝试主渠道，容灾全程静默，仅日志可见）");
-        b.CloseElement();
-        b.CloseElement();
-
-        // 思维链显示
-        b.OpenElement(_seq++, "div");
-        b.AddAttribute(_seq++, "class", "ls-toggle-row");
-
-        b.OpenElement(_seq++, "input");
-        b.AddAttribute(_seq++, "type", "checkbox");
-        b.AddAttribute(_seq++, "id", "showThinkingCheck");
-        b.AddAttribute(_seq++, "checked", Configuration.ShowThinkingChain);
-        b.AddAttribute(_seq++, "onchange", EventCallback.Factory.Create<ChangeEventArgs>(this, e =>
-        {
-            Configuration.ShowThinkingChain = e.Value is bool bv ? bv : !Configuration.ShowThinkingChain;
-            StateHasChanged();
-        }));
-        b.CloseElement();
-
-        b.OpenElement(_seq++, "label");
-        b.AddAttribute(_seq++, "for", "showThinkingCheck");
-        b.AddContent(_seq++, "显示思维链（开启后将 reasoning/thinking 等字段转为可见内容，关闭则隐藏；实时生效）");
-        b.CloseElement();
-        b.CloseElement();
-
+        CompactSwitch(b, "showThinkingCheck", Configuration.ShowThinkingChain,
+            v => Configuration.ShowThinkingChain = v,
+            "显示思考过程",
+            "在对话的「思考过程」区显示模型思考；关闭只影响显示，仍计入统计");
     }
 
-    /// <summary>思考相关的低频微调（收进"高级参数"折叠区）：忽略历史隐式功能占用 + 自定义思考触发关键词。</summary>
+    /// <summary>思考相关的低频微调（折叠）：忽略历史隐式功能占用 + 自定义思考触发关键词。</summary>
     void AddThinkingAdvanced(RenderTreeBuilder b)
     {
-        // 忽略历史隐式功能占用
-        b.OpenElement(_seq++, "div");
-        b.AddAttribute(_seq++, "class", "ls-toggle-row");
-
-        b.OpenElement(_seq++, "input");
-        b.AddAttribute(_seq++, "type", "checkbox");
-        b.AddAttribute(_seq++, "id", "ignorePersistentThinkingCheck");
-        b.AddAttribute(_seq++, "checked", Configuration.IgnorePersistentThinking);
-        b.AddAttribute(_seq++, "onchange", EventCallback.Factory.Create<ChangeEventArgs>(this, e =>
+        Fold(b, "thinking-adv", "思考模式进阶", () =>
         {
-            Configuration.IgnorePersistentThinking = e.Value is bool bv ? bv : !Configuration.IgnorePersistentThinking;
-            StateHasChanged();
-        }));
-        b.CloseElement();
+            CompactSwitch(b, "ignorePersistentThinkingCheck", Configuration.IgnorePersistentThinking,
+                v => Configuration.IgnorePersistentThinking = v,
+                "忽略历史里的待思考标记",
+                "历史中调用过工具也照常走非思考，日常闲聊更省 token；真要调工具时仍会自动思考");
 
-        b.OpenElement(_seq++, "label");
-        b.AddAttribute(_seq++, "for", "ignorePersistentThinkingCheck");
-        b.AddContent(_seq++, "忽略历史隐式功能占用（针对历史中调用过工具的角色：日常闲聊走非思考更省 token，AI 即将调用工具/函数出错时仍自动切回思考）");
-        b.CloseElement();
-        b.CloseElement();
-
-        AddInput(b, "思考触发关键词（逗号分隔）", Configuration.ThinkingTriggerKeywords ?? "", v => Configuration.ThinkingTriggerKeywords = string.IsNullOrWhiteSpace(v) ? null : v);
-        AddHint(b, "用户消息命中任一关键词时强制走思考模式（即使默认非思考也临时切回），适合需要深度推理的场景，如：代码,数学,分析");
+            AddInput(b, "关键词强制思考（逗号分隔）", Configuration.ThinkingTriggerKeywords ?? "",
+                v => Configuration.ThinkingTriggerKeywords = string.IsNullOrWhiteSpace(v) ? null : v);
+            Note(b, "消息命中这些词就临时走思考，例如：代码,数学,分析");
+        });
     }
 
-    /// <summary>容灾低频参数（收进"高级参数"折叠区）：错误关键字、重试间隔、请求超时、流空闲超时。</summary>
+    /// <summary>容灾低频参数（折叠）：错误关键字、重试间隔、请求超时、流空闲超时。</summary>
     void AddDisasterAdvanced(RenderTreeBuilder b)
     {
-        AddInput(b, "错误关键字（逗号分隔）", Configuration.ErrorKeywords ?? "", v => Configuration.ErrorKeywords = string.IsNullOrEmpty(v) ? null : v);
-        AddHint(b, "响应体中包含这些关键字时触发切换，如 rate_limit,insufficient_quota,billing_hard_limit\n留空则仅按 HTTP 状态码判断；内容安全检查类错误（如 data_inspection_failed、content_filter）已内置自动容灾");
-
-        AddInput(b, "重试间隔（毫秒）", Configuration.RetryDelayMs.ToString(), v =>
+        Fold(b, "disaster", "更多容灾参数", () =>
         {
-            if (int.TryParse(v, out var n))
-                Configuration.RetryDelayMs = Math.Clamp(n, 0, 30000);
-        });
-        AddHint(b, "切换到下一组前的等待时间，默认 1000ms，设为 0 则立即重试");
+            AddInput(b, "额外错误关键字（逗号分隔）", Configuration.ErrorKeywords ?? "",
+                v => Configuration.ErrorKeywords = string.IsNullOrEmpty(v) ? null : v);
+            Note(b, "返回内容含这些词就换组（如 rate_limit,quota）。限流、额度不足、内容审查已内置，一般留空");
 
-        AddInput(b, "请求超时（毫秒）", Configuration.RequestTimeoutMs.ToString(), v =>
-        {
-            if (int.TryParse(v, out var n))
-                Configuration.RequestTimeoutMs = Math.Clamp(n, 1000, 300000);
-        });
-        AddHint(b, "单次渠道请求超时上限，默认 30000ms。渠道挂起/无响应时按此时间快速容灾切换，避免长时间卡住；设为 0 则保留 100 秒兜底");
+            AddInput(b, "重试间隔（毫秒）", Configuration.RetryDelayMs.ToString(), v =>
+            {
+                if (int.TryParse(v, out var n))
+                    Configuration.RetryDelayMs = Math.Clamp(n, 0, 30000);
+            });
+            Note(b, "换组前等待时间，默认 1000ms；0 = 立即重试");
 
-        AddInput(b, "流空闲超时（毫秒）", Configuration.StreamIdleTimeoutMs.ToString(), v =>
-        {
-            if (int.TryParse(v, out var n))
-                Configuration.StreamIdleTimeoutMs = Math.Clamp(n, 0, 600000);
+            AddInput(b, "请求超时（毫秒）", Configuration.RequestTimeoutMs.ToString(), v =>
+            {
+                if (int.TryParse(v, out var n))
+                    Configuration.RequestTimeoutMs = Math.Clamp(n, 1000, 300000);
+            });
+            Note(b, "单次渠道请求超时，默认 30000ms；渠道卡住时按此时间放弃并换组");
+
+            AddInput(b, "流空闲超时（毫秒）", Configuration.StreamIdleTimeoutMs.ToString(), v =>
+            {
+                if (int.TryParse(v, out var n))
+                    Configuration.StreamIdleTimeoutMs = Math.Clamp(n, 0, 600000);
+            });
+            Note(b, "连上后长时间没数据就报错，默认 0 = 关闭；思考很久的模型别设太小");
         });
-        AddHint(b, "已建立连接但长时间未收到任何数据（含 keep-alive）视为异常，默认 0=关闭。防止渠道返回 200 后流挂起导致永久等待；模型思考较久时可能误判，请酌情设置");
     }
 
     // ==================== Switch ====================
@@ -2053,14 +2318,6 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
     }
 
 
-    void SectionTitle(RenderTreeBuilder b, string text)
-    {
-        b.OpenElement(_seq++, "div");
-        b.AddAttribute(_seq++, "class", "ls-section-title");
-        b.AddContent(_seq++, text);
-        b.CloseElement();
-    }
-
     /// <summary>采样温度显示值：null 显示为空（=不发送该参数）；用不变文化格式化，避免小数分隔符随系统区域变化</summary>
     static string FormatTemperature(double? value)
         => value.HasValue ? value.Value.ToString(System.Globalization.CultureInfo.InvariantCulture) : "";
@@ -2073,43 +2330,11 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
             System.Globalization.CultureInfo.InvariantCulture, out double t) ? t : null;
     }
 
-    void AddHint(RenderTreeBuilder b, string text)
-    {
-        b.OpenElement(_seq++, "div");
-        b.AddAttribute(_seq++, "class", "ls-hint");
-        b.AddContent(_seq++, text);
-        b.CloseElement();
-    }
-
     void AddLabel(RenderTreeBuilder b, string text)
     {
         b.OpenElement(_seq++, "div");
         b.AddAttribute(_seq++, "class", "ls-label");
         b.AddContent(_seq++, text);
-        b.CloseElement();
-    }
-
-    void AddToggleRow(RenderTreeBuilder b, string id, bool value, Action<bool> onChange, string label)
-    {
-        b.OpenElement(_seq++, "div");
-        b.AddAttribute(_seq++, "class", "ls-toggle-row");
-
-        b.OpenElement(_seq++, "input");
-        b.AddAttribute(_seq++, "type", "checkbox");
-        b.AddAttribute(_seq++, "id", id);
-        b.AddAttribute(_seq++, "checked", value);
-        b.AddAttribute(_seq++, "onchange", EventCallback.Factory.Create<ChangeEventArgs>(this, e =>
-        {
-            bool next = e.Value is bool bv ? bv : !value;
-            onChange(next);
-            StateHasChanged();
-        }));
-        b.CloseElement();
-
-        b.OpenElement(_seq++, "label");
-        b.AddAttribute(_seq++, "for", id);
-        b.AddContent(_seq++, label);
-        b.CloseElement();
         b.CloseElement();
     }
 
@@ -2133,57 +2358,4 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
         b.CloseComponent();
     }
 
-    /// <summary>
-    /// 受控的可折叠卡片：open 状态存于 _groupOpenStates（以 GroupChannel 为键），
-    /// 点击 summary 由本组件接管（阻止原生默认折叠），保证开关等交互触发 StateHasChanged 重渲染后
-    /// 组仍保持原来的展开/收起状态。
-    /// </summary>
-    void AddCollapsibleGroup(RenderTreeBuilder b, string title, bool isOpen, GroupChannel? key, Action renderContent, bool canRemove = false, Action? onRemove = null)
-    {
-        b.OpenElement(_seq++, "details");
-        b.AddAttribute(_seq++, "class", "ls-details");
-        if (isOpen)
-            b.AddAttribute(_seq++, "open", true);
-
-        b.OpenElement(_seq++, "summary");
-        b.AddAttribute(_seq++, "onclick", EventCallback.Factory.Create<MouseEventArgs>(this, e =>
-        {
-            if (key == null) return;
-            _groupOpenStates[key] = !isOpen;
-            StateHasChanged();
-        }));
-        b.AddEventPreventDefaultAttribute(_seq++, "onclick", true);
-
-        b.OpenElement(_seq++, "span");
-        b.AddAttribute(_seq++, "class", "ls-arrow");
-        b.AddContent(_seq++, "▶");
-        b.CloseElement();
-        b.AddContent(_seq++, " " + title);
-
-        if (canRemove && onRemove != null)
-        {
-            b.OpenElement(_seq++, "button");
-            b.AddAttribute(_seq++, "type", "button");
-            b.AddAttribute(_seq++, "class", "ls-btn-remove");
-            b.AddAttribute(_seq++, "style", "margin-left:8px; padding:1px 10px; font-size:11px;");
-            b.AddAttribute(_seq++, "onclick", EventCallback.Factory.Create(this, (MouseEventArgs e) =>
-            {
-                if (key != null)
-                    _groupOpenStates.Remove(key);
-                onRemove();
-            }));
-            // 删除按钮点击不冒泡到 summary，避免同时触发展开/收起
-            b.AddEventStopPropagationAttribute(_seq++, "onclick", true);
-            b.AddContent(_seq++, "删除");
-            b.CloseElement();
-        }
-
-        b.CloseElement();
-
-        b.OpenElement(_seq++, "div");
-        b.AddAttribute(_seq++, "class", "ls-details-content");
-        renderContent();
-        b.CloseElement();
-        b.CloseElement();
-    }
 }
