@@ -27,7 +27,7 @@ namespace Alife.Plugin.LanguageModelRouter;
     "替换框架内置语言模型，支持动态数量的渠道组（可自由增删）。一句话让 AI 切换渠道，遭遇 429/5xx 自动容灾重试，可探测可用模型列表。",
     editorUI: typeof(LanguageModelRouterUI),
     defaultCategory: "Doro的妙妙工具")]
-public class LanguageModelRouter(
+public partial class LanguageModelRouter(
     ILogger<LanguageModelRouter> logger,
     ConfigurationSystem configurationSystem
 ) : ChatBehaviour,
@@ -114,28 +114,56 @@ public class LanguageModelRouter(
     // ──── IMultimodalExecutor（原生多模态，对齐官方 OpenAI 语言模型）────
 
     /// <summary>
-    /// 当前即将服务请求的渠道组是否开启了该内容类型对应的原生多模态
-    /// （input_audio 看"音频输入"开关，其余看"原生多模态"总开关）。
+    /// 当前即将服务请求的渠道组能否使用该内容类型；不可用时返回给用户看的原因。
+    /// （input_audio 看"音频输入"开关，其余看"原生多模态"总开关；另含"刚被上游拒绝"的冷却期）
     /// </summary>
-    bool IMultimodalExecutor.CanUseContentType(string protocolTypeName) => IsCurrentGroupContentTypeEnabled(protocolTypeName);
+    string? IMultimodalExecutor.GetContentBlockReason(string protocolTypeName)
+    {
+        LanguageModelRouterConfig cfg = Configuration;
+        if (cfg == null)
+            return "灵枢：模块配置未注入，无法读取多模态设置，请重载插件。";
+
+        FallbackGroup? group = GetPrimaryGroup(cfg);
+        if (group == null)
+            return "灵枢：未配置任何可用渠道组，无法分析媒体内容。";
+
+        if (NativeMultimodalProtocol.IsAllowed(
+                protocolTypeName, group.EnableNativeMultimodal, group.EnableAudioMultimodal) == false)
+        {
+            return "当前渠道组未开启对应的「原生多模态 / 音频输入」，无法分析该内容。请在对应组配置中开启后再试。";
+        }
+
+        if (IsMediaCoolingDown(group.Slot, out int remainMinutes))
+        {
+            return $"当前渠道组刚刚拒绝了媒体输入（多为该模型不支持该媒体或流程限制），已临时停用约 {remainMinutes} 分钟；"
+                + "可以先换一组支持多模态的渠道，或稍后再试。";
+        }
+
+        return null;
+    }
 
     /// <summary>当前即将服务请求的渠道组是否开启了指定内容类型（= 容灾起始组）。</summary>
     internal bool IsCurrentGroupContentTypeEnabled(string protocolTypeName)
     {
-        LanguageModelRouterConfig cfg = Configuration;
-        if (cfg == null) return false;
+        FallbackGroup? group = GetPrimaryGroup(Configuration);
+        return group != null && NativeMultimodalProtocol.IsAllowed(
+            protocolTypeName, group.EnableNativeMultimodal, group.EnableAudioMultimodal);
+    }
+
+    /// <summary>取"本次请求会先尝试的渠道组"（强制锁定优先，否则主组）。</summary>
+    FallbackGroup? GetPrimaryGroup(LanguageModelRouterConfig? cfg)
+    {
+        if (cfg == null) return null;
         cfg.EnsureGroups();
 
         List<FallbackGroup> groups = BuildFallbackGroups(cfg);
-        if (groups.Count == 0) return false;
+        if (groups.Count == 0) return null;
 
         int startIndex = GetForcedDisplayIndex(cfg);
         if (startIndex < 0 || startIndex >= groups.Count)
             startIndex = 0;
 
-        FallbackGroup group = groups[startIndex];
-        return NativeMultimodalProtocol.IsAllowed(
-            protocolTypeName, group.EnableNativeMultimodal, group.EnableAudioMultimodal);
+        return groups[startIndex];
     }
 
     // ──── 生命周期 ────
@@ -199,6 +227,9 @@ public class LanguageModelRouter(
             return Task.CompletedTask;
         cfg.EnsureGroups();
 
+        // 自定义命令拦截（消息入史之前重写内容）：不依赖 Xml 函数调用器，必须尽早挂上
+        SubscribeCommandInterceptor();
+
         functionService = ChatActivity.Container.Instances.OfType<XmlFunctionCaller>().FirstOrDefault();
         if (functionService == null)
         {
@@ -235,9 +266,12 @@ public class LanguageModelRouter(
         return Task.CompletedTask;
     }
 
-    /// <summary>注销本模块注册的 XmlHandler 并释放 HTTP 连接池（对齐官方 OnDestroy 的 Dispose 行为）。</summary>
+    /// <summary>注销本模块注册的 XmlHandler、命令拦截并释放 HTTP 连接池（对齐官方 OnDestroy 的 Dispose 行为）。</summary>
     protected override Task OnDestroy()
     {
+        UnsubscribeCommandInterceptor();
+        ClearPendingCommand();
+
         if (registeredHandler != null)
         {
             functionService?.UnregisterHandler(registeredHandler);
@@ -275,9 +309,39 @@ public class LanguageModelRouter(
         string userMessage = OpenAIChatProtocol.GetUserMessage(history);
         currentUserMessage = OpenAIChatProtocol.GetLastUserMessage(history);
 
+        LanguageModelRouterConfig? cfg = Configuration;
+        lastRequestIncludedMedia = false;
+
+        CommandNotice? notice = TakeCommandNotice(out CommandAction noticeAction);
 
         try
         {
+            // 纯命令轮（/删除最新一轮对话）：上下文已在拦截阶段改好，这里不请求模型、不写历史、不计用量
+            if (TakePendingCommand() == CommandAction.DeleteLastRound)
+            {
+                RemoveTrailingCommandMessage(history);
+                if (notice is { } deleteNotice)
+                    await EmitCommandNoticeAsync(deleteNotice, CommandAction.DeleteLastRound, textReceived);
+
+                // 注意：不能返回空 AIMessage。官方「消息过滤」插件有内置规则「调用丢失验证」
+                // （输出必须匹配 <.*>），空输出会被判为格式错误 → Poke 一条更正 → Poke 又会自动开一轮模型对话，
+                // 宠物就会自己再演一遍。这里给一个"显式不调用函数"的占位输出，且不写入历史。
+                return new ChatResult { AIMessage = NoOpAIMessage, AIThinking = "", Exception = null };
+            }
+
+            // /重新生成：先给一条提示，随后的正文由模型重新生成
+            if (notice is { } regenerateNotice && noticeAction == CommandAction.Regenerate)
+                await EmitCommandNoticeAsync(regenerateNotice, CommandAction.Regenerate, textReceived);
+
+            // 媒体卫生说明：历史里"非本轮、非常驻"的媒体由序列化层自动降级为占位文本（只读判定，不改写历史），
+            // 所以即使某次临时媒体没清干净，也不会出现"一张图坏了之后每轮都失败"。这里只在开调试日志时报个数。
+            if (cfg is { DebugLogPayload: true })
+            {
+                int mediaMessages = MediaHygiene.CountMediaMessages(history);
+                if (mediaMessages > 0)
+                    Console.WriteLine($"[灵枢][诊断] 上下文中携带媒体的消息共 {mediaMessages} 条（仅最后一条/常驻项会随请求发送）");
+            }
+
             await RequestAsync(
                 history,
                 messageBuilder,
@@ -300,9 +364,23 @@ public class LanguageModelRouter(
             exception = e;
             logger.LogError(e, "[灵枢] 语言模型请求失败");
         }
+        finally
+        {
+            ClearPendingCommand();
+            ClearCommandNotice();
+        }
 
         string aiMessage = messageBuilder.ToString();
         string aiThinking = thinkingBuilder.ToString();
+
+        // 上游 200 但正文其实是错误文案（如"当前模型不支持图片，请重开对话"）：
+        // 绝不能当成 AI 的回复写进历史，否则桌宠会把这句错误记成自己的话（并被记忆压缩固化）。
+        if (exception == null && lastRequestIncludedMedia && LooksLikeUpstreamErrorReply(aiMessage))
+        {
+            exception = new Exception("灵枢：上游返回了错误内容 —— " + TrimBody(aiMessage));
+            aiMessage = "";
+            HandleMediaRejectedLocally(history, "上游把媒体请求当错误返回");
+        }
 
         // 所有渠道都"成功"但没有任何正文：给出明确提示，避免用户面对空白回复
         if (exception == null
@@ -387,55 +465,97 @@ public class LanguageModelRouter(
                 continue;
             }
 
-            using HttpRequestMessage request = BuildRequest(history, group, thinking);
-            HttpResponseMessage? response;
-            try
-            {
-                response = await SendAsync(client, request, cancellationToken);
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                throw; // 用户主动停止：直接向上抛，由主流程静默结束
-            }
-            catch (TimeoutException ex)
-            {
-                lastError = ex;
-                Console.WriteLine($"[灵枢] 第 {group.Slot + 1} 组 {group.Endpoint.Host} ✗ 请求超时" +
-                    (attempt < maxAttempts - 1 ? " → 容灾切换" : "，无备用渠道可切换"));
-                continue;
-            }
-            catch (HttpRequestException ex)
-            {
-                lastError = ex;
-                Console.WriteLine($"[灵枢] 第 {group.Slot + 1} 组 {group.Endpoint.Host} ✗ 网络错误：{ex.Message}" +
-                    (attempt < maxAttempts - 1 ? " → 容灾切换" : "，无备用渠道可切换"));
-                continue;
-            }
+            bool allowMedia = IsMediaAllowedForGroup(group);
+            bool mediaRetried = false;
+            bool moveToNextGroup = false;
 
-            if (response.IsSuccessStatusCode)
+            while (true)
             {
-                successResponse = response;
-                thinkingUsed = thinking;
-                MarkServed(group, attempt > 0);
-                break;
-            }
+                using HttpRequestMessage request = BuildRequest(history, group, thinking, allowMedia, out bool mediaIncluded);
+                HttpResponseMessage? response;
+                try
+                {
+                    response = await SendAsync(client, request, cancellationToken);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw; // 用户主动停止：直接向上抛，由主流程静默结束
+                }
+                catch (TimeoutException ex)
+                {
+                    lastError = ex;
+                    Console.WriteLine($"[灵枢] 第 {group.Slot + 1} 组 {group.Endpoint.Host} ✗ 请求超时" +
+                        (attempt < maxAttempts - 1 ? " → 容灾切换" : "，无备用渠道可切换"));
+                    moveToNextGroup = true;
+                    break;
+                }
+                catch (HttpRequestException ex)
+                {
+                    lastError = ex;
+                    Console.WriteLine($"[灵枢] 第 {group.Slot + 1} 组 {group.Endpoint.Host} ✗ 网络错误：{ex.Message}" +
+                        (attempt < maxAttempts - 1 ? " → 容灾切换" : "，无备用渠道可切换"));
+                    moveToNextGroup = true;
+                    break;
+                }
 
-            string errorBody = await SafeReadBodyAsync(response, cancellationToken);
-            bool shouldFallback = cfg.AutoFailoverEnabled && ShouldFallback(response.StatusCode, errorBody, cfg);
+                if (response.IsSuccessStatusCode)
+                {
+                    successResponse = response;
+                    thinkingUsed = thinking;
+                    lastRequestIncludedMedia = mediaIncluded;
+                    MarkServed(group, attempt > 0);
+                    break;
+                }
 
-            if (shouldFallback && attempt < maxAttempts - 1)
-            {
-                Console.WriteLine($"[灵枢] 第 {group.Slot + 1} 组 {group.Endpoint.Host} ✗{(int)response.StatusCode} → 容灾切换");
+                string errorBody = await SafeReadBodyAsync(response, cancellationToken);
+
+                // 媒体被上游拒绝：先在同一组"去图重试"一次（官方是永远不发媒体，我们退一步保证这轮仍有回复），
+                // 避免一张坏图把整轮对话废掉，也避免用户看到错误弹窗。
+                if (mediaIncluded
+                    && mediaRetried == false
+                    && cfg.MediaRetryWithoutMedia
+                    && IsMediaRejection(response.StatusCode, errorBody))
+                {
+                    mediaRetried = true;
+                    allowMedia = false;
+                    response.Dispose();
+
+                    Console.WriteLine($"[灵枢] 第 {group.Slot + 1} 组 {group.Endpoint.Host} ✗{(int)response.StatusCode} 拒绝媒体输入 → 剥离媒体后同组重试");
+                    if (cfg.DebugLogPayload)
+                        Console.WriteLine($"[灵枢][诊断] 上游原始错误体：{TrimBody(errorBody)}");
+
+                    MarkMediaCooldown(group.Slot, cfg.MediaCooldownMinutes);
+                    // 只在本轮不发送媒体，历史里的媒体（尤其是常驻图片）保持原样，冷却结束后可继续使用
+                    Console.WriteLine("[灵枢] 本轮改为纯文本重试，历史中的图片保留不动");
+                    continue;
+                }
+
+                bool shouldFallback = cfg.AutoFailoverEnabled && ShouldFallback(response.StatusCode, errorBody, cfg);
+
+                if (shouldFallback && attempt < maxAttempts - 1)
+                {
+                    Console.WriteLine($"[灵枢] 第 {group.Slot + 1} 组 {group.Endpoint.Host} ✗{(int)response.StatusCode} → 容灾切换");
+                    response.Dispose();
+                    moveToNextGroup = true;
+                    break;
+                }
+
+                Console.WriteLine(attempt < maxAttempts - 1
+                    ? $"[灵枢] 第 {group.Slot + 1} 组 {group.Endpoint.Host} ✗{(int)response.StatusCode}"
+                    : $"[灵枢] 第 {group.Slot + 1} 组 {group.Endpoint.Host} ✗{(int)response.StatusCode}，无备用渠道可切换");
+
+                if (cfg.DebugLogPayload)
+                    Console.WriteLine($"[灵枢][诊断] 上游原始错误体：{TrimBody(errorBody)}");
+
                 response.Dispose();
-                continue;
+                throw new Exception($"灵枢：HTTP {(int)response.StatusCode} {TrimBody(errorBody)}");
             }
 
-            Console.WriteLine(attempt < maxAttempts - 1
-                ? $"[灵枢] 第 {group.Slot + 1} 组 {group.Endpoint.Host} ✗{(int)response.StatusCode}"
-                : $"[灵枢] 第 {group.Slot + 1} 组 {group.Endpoint.Host} ✗{(int)response.StatusCode}，无备用渠道可切换");
+            if (moveToNextGroup)
+                continue;
 
-            response.Dispose();
-            throw new Exception($"灵枢：HTTP {(int)response.StatusCode} {TrimBody(errorBody)}");
+            if (successResponse != null)
+                break;
         }
 
         if (successResponse == null)
@@ -572,14 +692,22 @@ public class LanguageModelRouter(
 
     // ──── 请求组装 ────
 
-    /// <summary>按目标渠道组组装 OpenAI 兼容请求体（模型/温度/思考参数/多模态能力均取该组配置）。</summary>
-    HttpRequestMessage BuildRequest(ChatHistory history, FallbackGroup group, bool thinking)
+    /// <summary>
+    /// 按目标渠道组组装 OpenAI 兼容请求体（模型/温度/思考参数/多模态能力均取该组配置）。
+    /// allowMedia=false 时强制剥离媒体（被上游拒过 / 冷却期内 / 去图重试）；
+    /// mediaIncluded 返回本次请求体里是否真的带了媒体。
+    /// </summary>
+    HttpRequestMessage BuildRequest(ChatHistory history, FallbackGroup group, bool thinking, bool allowMedia, out bool mediaIncluded)
     {
+        bool allowImageVideo = allowMedia && group.EnableNativeMultimodal;
+        bool allowAudio = allowMedia && group.EnableAudioMultimodal;
+        bool allowPersistentMedia = allowMedia && (Configuration?.EnablePersistentMedia ?? true);
+
         JsonObject payload = new()
         {
             ["model"] = group.ModelId,
             ["messages"] = OpenAIChatProtocol.SerializeHistory(
-                history, group.EnableNativeMultimodal, group.EnableAudioMultimodal),
+                history, allowImageVideo, allowAudio, allowPersistentMedia, out mediaIncluded),
             ["stream"] = true,
             // 主动索取用量：多数兼容端点支持，官方插件未设置导致统计长期为 0
             ["stream_options"] = new JsonObject { ["include_usage"] = true }
@@ -603,6 +731,9 @@ public class LanguageModelRouter(
         ApplyBody(payload, group.ExtraBody, skipThinkingKeys: thinking == false);
         if (thinking == false)
             ApplyNonThinkingBody(payload, group.ExtraBodyNotThinking);
+
+        if (Configuration?.DebugLogPayload == true)
+            LogPayloadSummary(group, history, mediaIncluded, allowImageVideo, allowAudio);
 
         HttpRequestMessage request = new(HttpMethod.Post, OpenAIChatProtocol.CreateChatCompletionsUri(group.Endpoint))
         {
@@ -916,7 +1047,14 @@ public class LanguageModelRouter(
         {
             sb.AppendLine();
             sb.AppendLine("其中部分渠道组开启了「原生多模态」或「音频输入」。当需要分析图片/视频/音频时，你可以使用 LoadImage / LoadVideo / LoadAudio 函数查看这些内容。");
+            sb.AppendLine(cfg.EnablePersistentMedia
+                ? "查看内容时可以用 persistent=true 让它常驻上下文：之后的若干轮对话里你依然能看到它（直到对话被压缩归档）。"
+                  + "用户主动发图给你看、或需要后续持续参考时请用 persistent=true；只是顺手看一眼、无需记住时不要传，省 token。"
+                : "常驻上下文（persistent）当前未开启，媒体只在调用它的那一轮可见；若需要之后继续参考，请再次 Load。");
         }
+
+        // 自定义命令刻意不写进提示词：命令由插件在消息进入上下文前拦下，
+        // AI 完全不知道这些命令存在（否则它会去"解释命令"甚至自己假装执行）。
 
         return sb.ToString();
     }

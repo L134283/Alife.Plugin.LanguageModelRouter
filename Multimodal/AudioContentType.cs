@@ -8,7 +8,7 @@ using Microsoft.SemanticKernel;
 namespace Alife.Plugin.LanguageModelRouter;
 
 /// <summary>音频内容：协议序列化为 <c>input_audio</c>。AI 通过 <c>LoadAudio</c> 查看，用 persistent 参数选择常驻/临时。
-/// 写法对齐官方 Alife.Function.Language.OpenAI 4.5.0 的 AudioContentRegistrar。</summary>
+/// 格式按文件头嗅探（无扩展名的下载链不再一律当 mp3）。</summary>
 public sealed class AudioContent : KernelContent
 {
     public required byte[] Data { get; init; }
@@ -37,27 +37,17 @@ public sealed class AudioContentType : AlifeContentHandlerBase
 
     public override XmlFunction? CreateXmlFunction(ChatBot chatBot, LanguageModelRouterConfig config, IMultimodalExecutor executor)
     {
-        return AlifeContentUtility.BuildXmlFunction("LoadAudio", ProtocolTypeName, AudioFileToContent, chatBot, executor);
+        return AlifeContentUtility.BuildXmlFunction("LoadAudio", ProtocolTypeName, AudioFileToContent, chatBot, executor, config);
     }
 
-    static KernelContent AudioFileToContent(string file)
+    static KernelContent AudioFileToContent(string file, bool persistent)
     {
+        byte[] data = File.ReadAllBytes(file);
         return new AudioContent
         {
-            Data = File.ReadAllBytes(file),
-            Format = GetFormat(file)
-        };
-
-        static string GetFormat(string path) => Path.GetExtension(path).ToLowerInvariant() switch
-        {
-            ".mp3" => "mp3",
-            ".wav" => "wav",
-            ".m4a" => "m4a",
-            ".flac" => "flac",
-            ".ogg" or ".opus" => "ogg",
-            ".aac" => "aac",
-            ".webm" => "webm",
-            _ => "mp3"
+            Data = data,
+            Format = MediaSniffer.ResolveAudioFormat(file, data),
+            Metadata = persistent ? MediaHygiene.PersistentMetadata : MediaHygiene.TemporaryMetadata
         };
     }
 }

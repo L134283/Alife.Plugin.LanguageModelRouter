@@ -8,7 +8,7 @@ using Microsoft.SemanticKernel;
 namespace Alife.Plugin.LanguageModelRouter;
 
 /// <summary>视频内容：协议序列化为 <c>video_url</c>。AI 通过 <c>LoadVideo</c> 查看，用 persistent 参数选择常驻/临时。
-/// 写法对齐官方 Alife.Function.Language.OpenAI 4.5.0 的 VideoContentRegistrar。</summary>
+/// MIME 按文件头嗅探（无扩展名的下载链不再退化成 octet-stream）。</summary>
 public sealed class VideoUrlContent(string url) : KernelContent
 {
     /// <summary>network地址在上传前会先下载并固化为 data URI（base64）。</summary>
@@ -29,21 +29,16 @@ public sealed class VideoUrlContentType : AlifeContentHandlerBase
 
     public override XmlFunction? CreateXmlFunction(ChatBot chatBot, LanguageModelRouterConfig config, IMultimodalExecutor executor)
     {
-        return AlifeContentUtility.BuildXmlFunction("LoadVideo", ProtocolTypeName, VideoFileToContent, chatBot, executor);
+        return AlifeContentUtility.BuildXmlFunction("LoadVideo", ProtocolTypeName, VideoFileToContent, chatBot, executor, config);
     }
 
-    static KernelContent VideoFileToContent(string file)
+    static KernelContent VideoFileToContent(string file, bool persistent)
     {
         byte[] data = File.ReadAllBytes(file);
-        return new VideoUrlContent($"data:{GetMimeType(file)};base64,{Convert.ToBase64String(data)}");
+        string mimeType = MediaSniffer.ResolveVideoMime(file, data);
+        return new VideoUrlContent($"data:{mimeType};base64,{Convert.ToBase64String(data)}")
+        {
+            Metadata = persistent ? MediaHygiene.PersistentMetadata : MediaHygiene.TemporaryMetadata
+        };
     }
-
-    static string GetMimeType(string path) => Path.GetExtension(path).ToLowerInvariant() switch {
-        ".mp4" => "video/mp4",
-        ".mov" => "video/quicktime",
-        ".avi" => "video/x-msvideo",
-        ".mkv" => "video/x-matroska",
-        ".webm" => "video/webm",
-        _ => "application/octet-stream"
-    };
 }

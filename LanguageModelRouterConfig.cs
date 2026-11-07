@@ -6,6 +6,28 @@ using System.Text;
 
 namespace Alife.Plugin.LanguageModelRouter;
 
+/// <summary>自定义命令的动作类型。</summary>
+public enum CommandAction
+{
+    /// <summary>重新生成：删掉上一轮的 AI 回复，并把那条用户消息重新发一遍。</summary>
+    Regenerate = 0,
+
+    /// <summary>删除最新一轮对话：从上下文里删掉上一轮（AI 回复 + 用户消息），本轮不请求模型。</summary>
+    DeleteLastRound = 1
+}
+
+/// <summary>一条自定义命令。</summary>
+public class CommandRule
+{
+    /// <summary>触发词（含前缀，如 /重新生成）。</summary>
+    public string Trigger { get; set; } = "";
+
+    /// <summary>动作类型。</summary>
+    public CommandAction Action { get; set; } = CommandAction.Regenerate;
+
+    public bool Enabled { get; set; } = true;
+}
+
 /// <summary>单个渠道组配置</summary>
 public class GroupChannel
 {
@@ -109,6 +131,20 @@ public class LanguageModelRouterConfig
     public string? ThinkingTriggerKeywords { get; set; } // 自定义关键词触发思考（逗号分隔）：用户消息命中任一关键词时强制走思考模式，
                                                          // 即使在默认非思考模式下也会临时切回思考（适合需要深度推理的场景）
 
+    // === 多模态加固（v5.0.1）===
+    public bool EnablePersistentMedia { get; set; } = true;   // 允许 AI 用 persistent=true 把媒体常驻上下文（对齐官方 enabledPersistentContentTypes，默认开）
+    public bool MediaRetryWithoutMedia { get; set; } = true;  // 媒体被上游拒绝时，剥离媒体后在同一组重试一次（默认开，避免一张坏图废掉整轮）
+    public int MediaCooldownMinutes { get; set; } = 10;       // 媒体被拒后该组临时不发媒体的时长（分钟）；0=不冷却
+    public int MediaMaxMegabytes { get; set; } = 10;          // 单个媒体文件上限（MB），超过直接拒绝发送，避免 413
+    public bool DebugLogPayload { get; set; } = false;        // 调试日志：打印请求摘要与上游原始错误体（默认关）
+
+    // === 自定义命令（v5.0.1，默认关闭）===
+    public bool EnableCustomCommands { get; set; } = false;   // 总开关，默认关闭
+    public List<CommandRule> CommandRules { get; set; } = new(); // 命令表；为空时使用默认两条
+    public bool CommandEcho { get; set; } = true;             // 命令执行后用对话气泡回显一行结果（仅 UI 提示，不进上下文）
+    public string OwnerQq { get; set; } = "";                 // 主人 QQ 号：QQ 环境只允许该号触发命令
+    public bool RequireOwnerQq { get; set; } = true;          // 是否强制校验主人 QQ（默认开）
+
     // === 运行时状态（每个桌宠独立，随配置持久化）===
     public int ForcedGroupIndex { get; set; } = -1; // -1=自动容灾, >=0=强制使用 Groups 索引
     public bool AutoFailoverEnabled { get; set; } = true; // 是否启用自动容灾切换
@@ -149,6 +185,39 @@ public class LanguageModelRouterConfig
         }
 
         EnsureApiKeysProtected();
+        EnsureCommandRules();
+    }
+
+    /// <summary>默认命令表（首次使用或用户清空时补齐）。</summary>
+    public static List<CommandRule> CreateDefaultCommandRules() =>
+    [
+        new CommandRule { Trigger = "/重新生成", Action = CommandAction.Regenerate, Enabled = true },
+        new CommandRule { Trigger = "/删除最新一轮对话", Action = CommandAction.DeleteLastRound, Enabled = true }
+    ];
+
+    /// <summary>
+    /// 规范化命令表：表为空时写入默认两条，并把全角斜杠统一成半角。
+    /// 不做删除/去重（面板里正在编辑的空行不能被打断），空触发词在匹配时自动跳过。
+    /// </summary>
+    public void EnsureCommandRules()
+    {
+        if (CommandRules == null || CommandRules.Count == 0)
+        {
+            CommandRules = CreateDefaultCommandRules();
+            return;
+        }
+
+        foreach (CommandRule rule in CommandRules)
+        {
+            if (rule == null)
+                continue;
+
+            if (rule.Trigger == null)
+                rule.Trigger = "";
+
+            if (rule.Trigger.IndexOf('／') >= 0)
+                rule.Trigger = rule.Trigger.Replace('／', '/');
+        }
     }
 
     /// <summary>是否存在至少一组开启了任意"多模态"（原生多模态或音频输入）的已配置渠道

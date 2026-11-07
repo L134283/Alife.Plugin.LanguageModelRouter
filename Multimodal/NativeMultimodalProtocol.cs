@@ -1,3 +1,5 @@
+using System;
+using System.Text;
 using System.Text.Json.Nodes;
 using Microsoft.SemanticKernel;
 using ChatMessageContent = Microsoft.SemanticKernel.ChatMessageContent;
@@ -12,13 +14,20 @@ namespace Alife.Plugin.LanguageModelRouter;
 /// </summary>
 public static class NativeMultimodalProtocol
 {
+    /// <summary>历史里媒体消息自带的占位文本前缀（由 Load 系函数写入，不能当成正文发给上游）。</summary>
+    const string MediaPlaceholderTag = "[多模态内容(";
+
     /// <summary>
     /// 尝试把一条消息序列化为"含媒体"的 content parts 数组。
     /// 仅当消息确实携带（且本组允许的）媒体时返回数组；否则返回 null，调用方回退到纯文本通道。
-    /// 文本部分会清理旧版思维链前缀，避免污染上游上下文。
+    /// 文本部分会清理旧版思维链前缀与媒体占位文本，避免污染上游上下文。
+    /// <para>
+    /// 媒体卫生规则（只读判定，不改写历史）：只有**最后一条消息**（本轮消息）或**带常驻标记**的媒体
+    /// 才会随请求发送。这样即便某次临时媒体没能及时清理，也绝不会在之后每一轮里反复发送、反复被上游拒绝。
+    /// </para>
     /// </summary>
     public static JsonArray? TrySerializeWithMedia(
-        ChatMessageContent message, bool allowImageVideo, bool allowAudio)
+        ChatMessageContent message, bool allowImageVideo, bool allowAudio, bool allowPersistentMedia, bool isLastMessage)
     {
         JsonArray parts = new();
         bool hasMedia = false;
@@ -28,7 +37,7 @@ public static class NativeMultimodalProtocol
         {
             if (item is TextContent text)
             {
-                string value = OpenAIChatProtocol.StripThinkPrefix(text.Text);
+                string value = CleanText(text.Text);
                 if (value.Length == 0)
                     continue;
                 parts.Add(new JsonObject {
@@ -41,6 +50,11 @@ public static class NativeMultimodalProtocol
 
             IAlifeContentType? handler = AlifeContentRegistry.Find(item);
             if (handler == null || IsAllowed(handler.ProtocolTypeName, allowImageVideo, allowAudio) == false)
+                continue;
+
+            // 非本轮的历史媒体：只有"常驻"且面板允许常驻时才继续随请求发送
+            if (isLastMessage == false
+                && (allowPersistentMedia == false || MediaHygiene.IsPersistent(item) == false))
                 continue;
 
             try
@@ -70,17 +84,17 @@ public static class NativeMultimodalProtocol
         return parts;
     }
 
-    /// <summary>剔除媒体占位标记后的真实文本（没有则返回 null）。</summary>
+    /// <summary>清理文本：去旧版思维链前缀、去媒体占位行（如 [多模态内容(ImageContent)]）。</summary>
+    static string CleanText(string? text)
+    {
+        return StripMediaPlaceholder(OpenAIChatProtocol.StripThinkPrefix(text)).Trim();
+    }
+
+    /// <summary>剔除媒体占位行后的真实文本（没有则返回 null）。</summary>
     static string? TryGetRealText(string? text)
     {
-        string value = OpenAIChatProtocol.StripThinkPrefix(text);
-        if (string.IsNullOrWhiteSpace(value))
-            return null;
-        if (value == "ImageContent" || value == "VideoUrlContent" || value == "AudioContent")
-            return null;
-        if (value.StartsWith("[多模态内容(", System.StringComparison.Ordinal))
-            return null;
-        return value;
+        string value = CleanText(text);
+        return string.IsNullOrWhiteSpace(value) ? null : value;
     }
 
     /// <summary>
@@ -95,29 +109,20 @@ public static class NativeMultimodalProtocol
         {
             if (item is TextContent text)
             {
-                if (string.IsNullOrWhiteSpace(OpenAIChatProtocol.StripThinkPrefix(text.Text)) == false)
+                if (string.IsNullOrWhiteSpace(CleanText(text.Text)) == false)
                     return null; // 已有真实文本，无需占位
                 continue;
             }
 
-            placeholder ??= item switch
-            {
-                ImageContent => "[图片]",
-                VideoUrlContent => "[视频]",
-                AudioContent => "[音频]",
-                _ => "（媒体内容）"
-            };
+            if (MediaHygiene.IsMedia(item))
+                placeholder ??= MediaHygiene.PlaceholderFor(item);
         }
 
         if (placeholder == null)
             return null; // 没有媒体，维持原文本逻辑
 
-        // Items 无文本，但消息显式 Content 若为真实文本（非媒体内部类型名/多模态标记），应保留而非用占位覆盖
-        if (string.IsNullOrWhiteSpace(plainText) == false
-            && plainText != "ImageContent"
-            && plainText != "VideoUrlContent"
-            && plainText != "AudioContent"
-            && plainText.StartsWith("[多模态内容(", System.StringComparison.Ordinal) == false)
+        // Items 无文本，但消息显式 Content 若为真实文本，应保留而非用占位覆盖
+        if (string.IsNullOrWhiteSpace(CleanText(plainText)) == false)
             return null;
 
         return placeholder;
@@ -129,5 +134,28 @@ public static class NativeMultimodalProtocol
         return string.Equals(protocolTypeName, "input_audio", System.StringComparison.OrdinalIgnoreCase)
             ? allowAudio
             : allowImageVideo;
+    }
+
+    /// <summary>
+    /// 移除文本中的媒体占位行。
+    /// Load 系函数会把消息 Content 写成 "[多模态内容(ImageContent)]"，且可能被时间戳等过滤器加了前缀行，
+    /// 这些都不是给模型看的正文。
+    /// </summary>
+    public static string StripMediaPlaceholder(string? text)
+    {
+        if (string.IsNullOrEmpty(text))
+            return "";
+
+        if (text.Contains(MediaPlaceholderTag, StringComparison.Ordinal) == false)
+            return text;
+
+        StringBuilder builder = new();
+        foreach (string line in text.Split('\n'))
+        {
+            if (line.Contains(MediaPlaceholderTag, StringComparison.Ordinal))
+                continue;
+            builder.AppendLine(line);
+        }
+        return builder.ToString().TrimEnd('\r', '\n', ' ', '\t');
     }
 }

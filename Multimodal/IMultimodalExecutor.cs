@@ -1,7 +1,7 @@
 namespace Alife.Plugin.LanguageModelRouter;
 
 /// <summary>
-/// 供内容类型处理器使用的多模态执行器：回答"当前即将服务的渠道组是否开启该内容类型"。
+/// 供内容类型处理器使用的多模态执行器：回答"当前即将服务的渠道组是否能用该内容类型"。
 /// 由 <see cref="LanguageModelRouter"/> 实现。
 /// </summary>
 /// <remarks>
@@ -11,8 +11,8 @@ namespace Alife.Plugin.LanguageModelRouter;
 public interface IMultimodalExecutor
 {
     /// <summary>
-    /// 当前即将服务请求的渠道组是否开启了该内容类型对应的原生多模态
-    /// （input_audio 看"音频输入"开关，其余看"原生多模态"总开关）。
+    /// 当前渠道组能否使用该协议类型的内容（input_audio 看"音频输入"，其余看"原生多模态"）。
+    /// 可用返回 null；不可用返回给用户看的原因（未开启 / 刚被上游拒绝的冷却期）。
     /// </summary>
-    bool CanUseContentType(string protocolTypeName);
+    string? GetContentBlockReason(string protocolTypeName);
 }

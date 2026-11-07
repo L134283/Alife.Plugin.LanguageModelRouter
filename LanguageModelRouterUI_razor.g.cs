@@ -1518,6 +1518,14 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
         b.CloseElement();
         b.CloseElement();
 
+        // === 多模态（常驻 + 失败自愈）===
+        BlockTitle(b, "多模态", "图片/视频/音频 · 失败自动去图重试");
+        AddMultimodalSection(b);
+
+        // === 自定义命令 ===
+        BlockTitle(b, "自定义命令", "默认关闭 · QQ 环境只认主人");
+        AddCommandSection(b);
+
         // === 容灾与思考 ===
         BlockTitle(b, "容灾与思考", "默认设置即可，进阶项已折叠");
         AutoFailoverToggle(b);
@@ -1730,6 +1738,7 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
             HelpItem(b, "想容灾就再加一组、排在下面：失败时按从上到下的顺序自动换组。");
             HelpItem(b, "对桌宠说「切换到第2组」「切到硅基」，或点上面的按钮手动切换。");
             HelpItem(b, "需要看图：在支持图片的组里打开「原生多模态」，保存配置后重载一次本插件。");
+            HelpItem(b, "想让桌宠记住这张图：保持「允许图片常驻上下文」开启，AI 会用 persistent=true 把图留在上下文里，直到这段对话被记忆压缩归档。");
             b.CloseElement();
 
             Fold(b, "help-advanced", "进阶说明", () =>
@@ -1741,6 +1750,8 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
                 HelpItem(b, "智能思考：开启后平时不思考（更快更省），需要调用工具等复杂任务时自动思考。");
                 HelpItem(b, "Extra Headers / Extra Body 是 JSON，例如 {\"temperature\":0.7}，留空即不发送。");
                 HelpItem(b, "API Key 默认用 Windows 加密保存，只有当前用户能解密；关闭加密则明文存于配置文件，便于迁移。");
+                HelpItem(b, "自定义命令默认关闭：开启后在对话框输入 /重新生成 或 /删除最新一轮对话。QQ 群聊需在「自定义命令」里填主人 QQ，只有主人发的命令才会执行。");
+                HelpItem(b, "图片被上游拒绝时会自动去掉图片重试一次，并对该组短时冷却，不会再出现「之后所有图都看不了」。");
                 b.CloseElement();
             });
         });
@@ -2207,6 +2218,138 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
             v => Configuration.IgnoreSslCertificate = v,
             "跳过证书校验",
             "兼容自建 / 自签名证书渠道；公用渠道建议关闭（更安全）");
+    }
+
+    // ==================== 多模态 ====================
+
+    void AddMultimodalSection(RenderTreeBuilder b)
+    {
+        CompactSwitch(b, "persistentMediaCheck", Configuration.EnablePersistentMedia,
+            v => Configuration.EnablePersistentMedia = v,
+            "允许图片常驻上下文",
+            "开启后 AI 可用 persistent=true 让这张图在之后多轮对话里依然可见（直到该段对话被记忆压缩归档）");
+
+        Fold(b, "multimodal-adv", "多模态进阶（失败自愈 / 冷却 / 诊断）", () =>
+        {
+            CompactSwitch(b, "mediaRetryCheck", Configuration.MediaRetryWithoutMedia,
+                v => Configuration.MediaRetryWithoutMedia = v,
+                "被上游拒绝时去掉媒体重试",
+                "同一组内自动剥离媒体再试一次，保证这一轮仍有回复，不弹错误窗");
+
+            AddInput(b, "媒体冷却时长（分钟）", Configuration.MediaCooldownMinutes.ToString(), v =>
+            {
+                if (int.TryParse(v, out int n))
+                    Configuration.MediaCooldownMinutes = Math.Clamp(n, 0, 1440);
+            });
+            Note(b, "某组拒绝过媒体后，这段时间内不再往该组发图片，避免反复踩坑；0 = 不冷却");
+
+            AddInput(b, "单个媒体上限（MB）", Configuration.MediaMaxMegabytes.ToString(), v =>
+            {
+                if (int.TryParse(v, out int n))
+                    Configuration.MediaMaxMegabytes = Math.Clamp(n, 1, 200);
+            });
+            Note(b, "超过上限直接拒绝发送，避免请求体过大被上游 413 拒绝");
+
+            CompactSwitch(b, "debugPayloadCheck", Configuration.DebugLogPayload,
+                v => Configuration.DebugLogPayload = v,
+                "调试日志（请求摘要）",
+                "在 alife.log 记录每次请求的媒体摘要与上游原始错误体，排查看图问题用；平时建议关闭");
+        });
+    }
+
+    // ==================== 自定义命令 ====================
+
+    void AddCommandSection(RenderTreeBuilder b)
+    {
+        CompactSwitch(b, "customCommandCheck", Configuration.EnableCustomCommands,
+            v => Configuration.EnableCustomCommands = v,
+            "启用自定义命令",
+            "输入 /重新生成、/删除最新一轮对话 可直接操作上下文，不经过模型、不耗 token（默认关闭）");
+
+        Fold(b, "command-adv", "命令列表与主人 QQ 校验", () =>
+        {
+            AddInput(b, "主人 QQ（QQ 环境只认这个号）", Configuration.OwnerQq ?? "",
+                v => Configuration.OwnerQq = (v ?? "").Trim());
+            Note(b, "QQ 群聊里一轮可能包含多人的消息，只有这条命令属于主人 QQ 时才会执行；未填写则 QQ 环境一律不执行");
+
+            CompactSwitch(b, "requireOwnerQqCheck", Configuration.RequireOwnerQq,
+                v => Configuration.RequireOwnerQq = v,
+                "群聊只允许主人触发",
+                "关闭后任何人在群里发命令都会执行（不建议）；桌面环境不受此限制");
+
+            CompactSwitch(b, "commandEchoCheck", Configuration.CommandEcho,
+                v => Configuration.CommandEcho = v,
+                "命令执行后发一条提示",
+                "桌面显示「✅已重新生成 / ✅已删除最新一轮对话」气泡；QQ 环境由插件直接发一条消息（私聊发私聊、群聊发当前群）。仅提示，不进入上下文");
+
+            Configuration.EnsureCommandRules();
+            for (int i = 0; i < Configuration.CommandRules.Count; i++)
+                CommandRuleRow(b, i);
+
+            b.OpenElement(_seq++, "div");
+            b.AddAttribute(_seq++, "class", "ls-add-row");
+            b.OpenElement(_seq++, "button");
+            b.AddAttribute(_seq++, "type", "button");
+            b.AddAttribute(_seq++, "class", "ls-btn-add");
+            b.AddAttribute(_seq++, "onclick", EventCallback.Factory.Create(this, () =>
+            {
+                Configuration.CommandRules.Add(new CommandRule
+                {
+                    Trigger = "/新命令",
+                    Action = CommandAction.Regenerate,
+                    Enabled = true
+                });
+                StateHasChanged();
+            }));
+            b.AddContent(_seq++, "+ 添加命令");
+            b.CloseElement();
+            b.CloseElement();
+        });
+    }
+
+    void CommandRuleRow(RenderTreeBuilder b, int index)
+    {
+        if (index < 0 || index >= Configuration.CommandRules.Count)
+            return;
+
+        CommandRule rule = Configuration.CommandRules[index];
+
+        b.OpenElement(_seq++, "div");
+        b.AddAttribute(_seq++, "style", "display:flex;gap:6px;align-items:center;margin:6px 0;flex-wrap:wrap;");
+
+        b.OpenElement(_seq++, "input");
+        b.AddAttribute(_seq++, "type", "checkbox");
+        b.AddAttribute(_seq++, "checked", rule.Enabled);
+        b.AddAttribute(_seq++, "onchange", EventCallback.Factory.Create<ChangeEventArgs>(this, e =>
+        {
+            rule.Enabled = e.Value is bool value && value;
+            StateHasChanged();
+        }));
+        b.CloseElement();
+
+        b.OpenComponent<Input<string>>(_seq++);
+        b.AddAttribute(_seq++, "Value", rule.Trigger ?? "");
+        b.AddAttribute(_seq++, "Style", "flex:1;min-width:150px;");
+        b.AddAttribute(_seq++, "ValueChanged", EventCallback.Factory.Create<string>(this, v => rule.Trigger = v ?? ""));
+        b.CloseComponent();
+
+        AddSwitchBtn(b, "重新生成", rule.Action == CommandAction.Regenerate, true, () =>
+        {
+            rule.Action = CommandAction.Regenerate;
+            StateHasChanged();
+        });
+        AddSwitchBtn(b, "删除上一轮", rule.Action == CommandAction.DeleteLastRound, true, () =>
+        {
+            rule.Action = CommandAction.DeleteLastRound;
+            StateHasChanged();
+        });
+        AddSwitchBtn(b, "✕", false, true, () =>
+        {
+            Configuration.CommandRules.RemoveAt(index);
+            StateHasChanged();
+        });
+
+        b.CloseElement();
     }
 
     // ==================== Auto Failover Toggle ====================

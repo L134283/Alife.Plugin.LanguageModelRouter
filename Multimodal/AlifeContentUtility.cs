@@ -13,7 +13,7 @@ namespace Alife.Plugin.LanguageModelRouter;
 /// <summary>
 /// Load 系多模态函数的统一工具：把"本机路径或网络地址"归一化为可直接读取的本地文件，
 /// 并以统一的 (pathOrUrl, persistent) 参数构建 AI 可调用函数。
-/// 行为对齐官方 Alife.Function.Language.OpenAI 4.5.0 的 AlifeContentUtility：
+/// 行为对齐官方 Alife.Function.Language.OpenAI 的 AlifeContentUtility：
 /// ① 网址一律下载为本地临时文件后再读取（避免直链失效，也能真正验证可用性）；
 /// ② 参数统一为 pathOrUrl，persistent 默认 false（仅本次分析后移除），显式 true 才常驻上下文。
 /// </summary>
@@ -23,9 +23,10 @@ public static class AlifeContentUtility
     public static XmlFunction BuildXmlFunction(
         string name,
         string protocolTypeName,
-        Func<string, KernelContent> fileToContent,
+        Func<string, bool, KernelContent> fileToContent,
         ChatBot chatBot,
-        IMultimodalExecutor executor)
+        IMultimodalExecutor executor,
+        LanguageModelRouterConfig config)
     {
         return new XmlFunction
         {
@@ -34,7 +35,7 @@ public static class AlifeContentUtility
             Parameters =
             [
                 new XmlParameter { Name = "pathOrUrl", Type = "String", Description = "本机文件路径或可直链访问的网络地址" },
-                new XmlParameter { Name = "persistent", Type = "bool", Description = "将内容常驻上下文以持续分析，默认false（仅本次分析后即移除）" },
+                new XmlParameter { Name = "persistent", Type = "bool", Description = "将内容常驻上下文以持续分析（在后续多轮对话中依然可见），默认false（仅本次分析后即移除）" },
             ],
             Invoker = async (context, cancellationToken) =>
             {
@@ -45,14 +46,19 @@ public static class AlifeContentUtility
                     return;
                 }
 
-                // 临时分析依赖"当前服务渠道组真正支持该媒体"：不支持时媒体会被容灾管道剥离成占位文本，模型看不到
-                if (executor.CanUseContentType(protocolTypeName) == false)
+                // 临时分析依赖"当前服务渠道组真正支持该媒体"：不支持时媒体会被剥离成占位文本，模型看不到
+                string? blockReason = executor.GetContentBlockReason(protocolTypeName);
+                if (blockReason != null)
                 {
-                    chatBot.Poke("当前渠道组未开启对应的「原生多模态」，无法分析该内容。请在对应组的配置中开启后再试。");
+                    chatBot.Poke(blockReason);
                     return;
                 }
 
-                bool persistent = ResolvePersistentRequested(context);
+                // 常驻需要面板开关授权（对齐官方 enabledPersistentContentTypes）；未授权时降级为临时，不打断流程
+                bool persistentRequested = ResolvePersistentRequested(context);
+                bool persistent = persistentRequested && config != null && config.EnablePersistentMedia;
+                if (persistentRequested && persistent == false)
+                    Console.WriteLine("[灵枢] AI 请求常驻媒体，但面板未开启「允许媒体常驻上下文」，已降级为临时。");
 
                 // 网址统一下载为本地临时文件后再读取：避免直链失效，且能真正验证可用性
                 bool isUrl = IsUrl(pathOrUrl);
@@ -78,7 +84,20 @@ public static class AlifeContentUtility
                         return;
                     }
 
-                    KernelContent content = fileToContent(localPath);
+                    long maxBytes = Math.Max(1, config?.MediaMaxMegabytes ?? 10) * 1024L * 1024L;
+                    long fileSize = new FileInfo(localPath).Length;
+                    if (fileSize <= 0)
+                    {
+                        chatBot.Poke("内容读取失败：文件为空。");
+                        return;
+                    }
+                    if (fileSize > maxBytes)
+                    {
+                        chatBot.Poke($"内容过大（{fileSize / 1024 / 1024.0:F1} MB，上限 {maxBytes / 1024 / 1024} MB），已取消发送以避免上游拒绝。");
+                        return;
+                    }
+
+                    KernelContent content = fileToContent(localPath, persistent);
                     StartContentChat(chatBot, content, persistent);
                 }
                 catch (Exception e)
@@ -98,14 +117,14 @@ public static class AlifeContentUtility
 
     /// <summary>
     /// 把内容作为一条正常用户消息加入对话并触发一次正常对话（AI 自身直接回答，无中间人二次转述）。
-    /// persistent=false 时对话结束后移除该媒体消息；true 则常驻上下文。
+    /// persistent=false 时对话结束后移除该媒体消息；true 则常驻上下文（直到记忆压缩收走这一段）。
     /// 不 await：避免阻塞 AI 的函数调用（对齐官方写法），对话仍会走本插件的容灾管道。
     /// </summary>
     static void StartContentChat(ChatBot chatBot, KernelContent content, bool persistent)
     {
         ChatMessageContent message = new(AuthorRole.User, [content])
         {
-            Content = $"[多模态内容({content.GetType().Name})]"
+            Content = persistent ? $"[多模态内容({content.GetType().Name})·常驻]" : $"[多模态内容({content.GetType().Name})]"
         };
 
         _ = RunAsync();
@@ -127,23 +146,37 @@ public static class AlifeContentUtility
             }
 
             if (keep == false)
+                await RemoveContentMessageAsync(chatBot, message);
+        }
+    }
+
+    /// <summary>移除临时媒体消息；失败时重试一次，避免残留（残留会被媒体卫生层在下一轮剥离，但仍应尽量清干净）。</summary>
+    static async Task RemoveContentMessageAsync(ChatBot chatBot, ChatMessageContent message)
+    {
+        for (int attempt = 0; attempt < 2; attempt++)
+        {
+            try
             {
-                try
+                await chatBot.EditChatHistoryAsync(thread =>
                 {
-                    await chatBot.EditChatHistoryAsync(thread =>
-                    {
-                        thread.ChatHistory.Remove(message);
-                        return Task.CompletedTask;
-                    }, "移除多模态资源");
-                }
-                catch { }
+                    thread.ChatHistory.Remove(message);
+                    return Task.CompletedTask;
+                }, "移除多模态资源");
+                return;
+            }
+            catch (Exception e)
+            {
+                if (attempt == 1)
+                    Console.WriteLine($"[灵枢] 移除临时媒体消息失败（媒体卫生层会在下一轮剥离）：{e.Message}");
+                else
+                    await Task.Delay(200);
             }
         }
     }
 
     /// <summary>
     /// 解析 persistent 参数：新参数优先；兼容旧 temp（语义相反，temp=true 等价 persistent=false）。
-    /// 都不传时默认 false = 仅本次分析后移除（对齐官方 4.5.0）。
+    /// 都不传时默认 false = 仅本次分析后移除（对齐官方）。
     /// </summary>
     static bool ResolvePersistentRequested(XmlContext context)
     {
@@ -175,6 +208,7 @@ public static class AlifeContentUtility
     /// <summary>
     /// 把网址下载为本地临时文件并返回路径。无扩展名时用 HEAD 请求补全扩展名
     /// （含 QQ 多媒体域名的 Referer 适配，否则直链会 403）。
+    /// 注意：真实的媒体类型由 MediaSniffer 按文件头判定，扩展名只影响临时文件命名。
     /// </summary>
     public static async Task<string> UrlToPath(string url)
     {
@@ -215,7 +249,7 @@ public static class AlifeContentUtility
         }
         catch
         {
-            // 静默失败，回退到空扩展名
+            // 静默失败，回退到空扩展名（真实类型仍会由 MediaSniffer 按文件头嗅探）
         }
         return string.Empty;
     }
@@ -238,6 +272,7 @@ public static class AlifeContentUtility
         "image/bmp" => ".bmp",
         "image/svg+xml" => ".svg",
         "image/tiff" => ".tiff",
+        "image/heic" => ".heic",
         "audio/mpeg" => ".mp3",
         "audio/wav" => ".wav",
         "audio/ogg" => ".ogg",

@@ -35,12 +35,17 @@ public static class OpenAIChatProtocol
     /// <summary>
     /// 序列化整段对话历史。allowImageVideo / allowAudio 为本次请求目标组的原生多模态开关：
     /// 未开启的类型会被剥离为占位文本（如 [图片]），避免把媒体塞给不支持的上游。
+    /// allowPersistentMedia 决定历史中的"常驻媒体"是否继续随请求发送（只在最后一条消息之外生效）。
+    /// mediaIncluded 返回本次请求体里是否真的带了媒体（供"被拒后去图重试"判断）。
     /// </summary>
-    public static JsonArray SerializeHistory(ChatHistory history, bool allowImageVideo, bool allowAudio)
+    public static JsonArray SerializeHistory(
+        ChatHistory history, bool allowImageVideo, bool allowAudio, bool allowPersistentMedia, out bool mediaIncluded)
     {
+        bool hasMedia = false;
         JsonArray messages = new();
-        foreach (ChatMessageContent message in history)
+        for (int i = 0; i < history.Count; i++)
         {
+            ChatMessageContent message = history[i];
             string role = message.Role == AuthorRole.System ? "system"
                 : message.Role == AuthorRole.Assistant ? "assistant"
                 : message.Role == AuthorRole.Tool ? "tool"
@@ -48,7 +53,7 @@ public static class OpenAIChatProtocol
 
             // 只有用户消息可能携带媒体（图片/视频/音频），其余角色一律纯文本
             JsonNode content = role == "user"
-                ? SerializeUserContent(message, allowImageVideo, allowAudio)
+                ? SerializeUserContent(message, allowImageVideo, allowAudio, allowPersistentMedia, i == history.Count - 1, ref hasMedia)
                 : JsonValue.Create(StripThinkPrefix(message.Content))!;
 
             messages.Add(new JsonObject {
@@ -56,15 +61,22 @@ public static class OpenAIChatProtocol
                 ["content"] = content
             });
         }
+
+        mediaIncluded = hasMedia;
         return messages;
     }
 
-    static JsonNode SerializeUserContent(ChatMessageContent message, bool allowImageVideo, bool allowAudio)
+    static JsonNode SerializeUserContent(
+        ChatMessageContent message, bool allowImageVideo, bool allowAudio, bool allowPersistentMedia, bool isLastMessage, ref bool mediaIncluded)
     {
         // 携带可用媒体 → OpenAI 原生 content parts 数组
-        JsonArray? parts = NativeMultimodalProtocol.TrySerializeWithMedia(message, allowImageVideo, allowAudio);
+        JsonArray? parts = NativeMultimodalProtocol.TrySerializeWithMedia(
+            message, allowImageVideo, allowAudio, allowPersistentMedia, isLastMessage);
         if (parts != null)
+        {
+            mediaIncluded = true;
             return parts;
+        }
 
         // 纯文本（或媒体全部被禁用）→ 字符串通道，保持最大兼容
         string text = StripThinkPrefix(message.Content);
