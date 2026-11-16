@@ -82,13 +82,16 @@ public partial class LanguageModelRouter
 
             List<string> triggers = CollectTriggers(cfg);
 
-            // 只有消息里出现斜杠才值得去读 QQ 提示词（反射有开销，普通聊天不走这条路）
+            // 只有消息里出现斜杠才值得去读"已知追加文案"（反射有开销，普通聊天不走这条路）
             IReadOnlyList<string>? wrapperTexts =
-                message.Contains('/') || message.Contains('／') ? GetQqWrapperTexts() : null;
+                message.Contains('/') || message.Contains('／') ? GetKnownWrapperTexts() : null;
 
             CommandParser.Result match = CommandParser.Find(message, triggers, wrapperTexts);
             if (match.Success == false || match.Trigger == null)
+            {
+                LogCommandMiss(message, triggers);
                 return message;
+            }
 
             CommandRule? rule = FindRule(cfg, match.Trigger);
             if (rule == null)
@@ -118,7 +121,7 @@ public partial class LanguageModelRouter
                 return rule.Trigger; // 仅用于对话看板显示，随后在 ChatStreamingAsync 移除
             }
 
-            string? resend = PrepareRegenerate(out string? why);
+            string? resend = PrepareRegenerate(wrapperTexts, out string? why);
             if (resend == null)
             {
                 Console.WriteLine($"[灵枢] {rule.Trigger} 未执行：{why}");
@@ -164,9 +167,10 @@ public partial class LanguageModelRouter
 
     /// <summary>
     /// /重新生成：删除尾部这一轮的 AI 回复 + 那条用户消息，并把用户消息文本返回给调用方重新发送。
-    /// 失败返回 null（不修改历史）。
+    /// 重发的是"清理过的正文"——历史里那条消息可能带着时间戳、[源(...)]、系统推送块和追加提示词，
+    /// 原样重发会让这些外壳层层累积（也让 AI 看到过期时间）。失败返回 null（不修改历史）。
     /// </summary>
-    string? PrepareRegenerate(out string? reason)
+    string? PrepareRegenerate(IReadOnlyList<string>? wrapperTexts, out string? reason)
     {
         string? resend = null;
         string? failure = null;
@@ -221,7 +225,8 @@ public partial class LanguageModelRouter
                 return;
             }
 
-            resend = text;
+            // 重发正文：剔除时间戳、[源(...)]、系统推送块与已知追加提示词；清理后若为空则退回原文
+            resend = CommandParser.ExtractUserText(text, wrapperTexts) ?? text.Trim();
             history.RemoveRange(index, history.Count - index);
         }, "灵枢：重新生成");
 
@@ -320,11 +325,34 @@ public partial class LanguageModelRouter
         if (cfg == null)
             return;
 
-        if (CommandParser.Find(last.Content, CollectTriggers(cfg)).Success == false)
+        // 消息进历史前可能已被其它过滤器追加时间戳/提示词，判定时要把这些已知文案一并剔除，
+        // 否则命令轮会把自己的命令文本留在上下文里。
+        IReadOnlyList<string>? wrapperTexts =
+            last.Content?.Contains('/') == true ? GetKnownWrapperTexts() : null;
+
+        if (CommandParser.Find(last.Content, CollectTriggers(cfg), wrapperTexts).Success == false)
+        {
+            string environment = CommandParser.IsQqContext(last.Content ?? "") ? "QQ" : "桌面";
+            Console.WriteLine($"[灵枢][命令诊断] 命令轮的消息未能确认是命令，为避免误删已保留（{environment}）");
             return;
+        }
 
         history.RemoveAt(history.Count - 1);
         Console.WriteLine("[灵枢] 已移除命令轮的消息，命令不会进入上下文");
+    }
+
+    /// <summary>
+    /// 命令识别失败的诊断日志：只在"消息里明明出现了命令字样"时打印一行，
+    /// 用来看清框架/插件到底往消息里加了什么外壳（命令行本身必须单独成行）。
+    /// </summary>
+    static void LogCommandMiss(string message, List<string> triggers)
+    {
+        if (CommandParser.ContainsTriggerText(message, triggers) == false)
+            return;
+
+        string preview = message.Length <= 400 ? message : message[..400] + "…";
+        preview = preview.Replace("\r", "").Replace("\n", "\\n");
+        Console.WriteLine($"[灵枢][命令诊断] 消息里出现了命令字样但未被识别（命令必须单独成行）：{preview}");
     }
 
     // ──── 发起人校验 ────

@@ -2229,8 +2229,36 @@ public partial class LanguageModelRouterUI : ModuleUIBase<LanguageModelRouter, L
             "允许图片常驻上下文",
             "开启后 AI 可用 persistent=true 让这张图在之后多轮对话里依然可见（直到该段对话被记忆压缩归档）");
 
-        Fold(b, "multimodal-adv", "多模态进阶（失败自愈 / 冷却 / 诊断）", () =>
+        Fold(b, "multimodal-adv", "多模态进阶（超时 / 缓存 / 失败自愈 / 诊断）", () =>
         {
+            AddInput(b, "看图/内容下载超时（秒）", Configuration.MediaLoadTimeoutSeconds.ToString(), v =>
+            {
+                if (int.TryParse(v, out int n))
+                    Configuration.MediaLoadTimeoutSeconds = Math.Clamp(n, 0, 600);
+            });
+            Note(b, "图片/视频/音频链接的下载上限，超时立刻放弃并把原因告诉 AI，不再挂着不动；0 = 退回 180 秒兜底");
+
+            AddInput(b, "带媒体请求超时（秒）", Configuration.MediaRequestTimeoutSeconds.ToString(), v =>
+            {
+                if (int.TryParse(v, out int n))
+                    Configuration.MediaRequestTimeoutSeconds = Math.Clamp(n, 0, 600);
+            });
+            Note(b, "含图片/视频/音频的模型请求最多等多久（等响应头 + 流空闲），超时即报错退出，避免桌宠一直卡在看图；0 = 不额外限制");
+
+            AddInput(b, "同链接缓存复用（分钟）", Configuration.MediaCacheMinutes.ToString(), v =>
+            {
+                if (int.TryParse(v, out int n))
+                    Configuration.MediaCacheMinutes = Math.Clamp(n, 0, 1440);
+            });
+            Note(b, "同一条链接在这段时间内重复查看/重试直接读本地文件，不再联网；0 = 不缓存，每次都重新下载");
+
+            AddInput(b, "失败后暂停重试（秒）", Configuration.MediaFailureCooldownSeconds.ToString(), v =>
+            {
+                if (int.TryParse(v, out int n))
+                    Configuration.MediaFailureCooldownSeconds = Math.Clamp(n, 0, 3600);
+            });
+            Note(b, "链接超时/断网后，这段时间内同一链接直接拒绝再次加载，避免反复卡在同一张图；0 = 不禁用重试");
+
             CompactSwitch(b, "mediaRetryCheck", Configuration.MediaRetryWithoutMedia,
                 v => Configuration.MediaRetryWithoutMedia = v,
                 "被上游拒绝时去掉媒体重试",

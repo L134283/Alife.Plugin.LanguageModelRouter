@@ -447,6 +447,7 @@ public partial class LanguageModelRouter(
         HttpResponseMessage? successResponse = null;
         Exception? lastError = null;
         bool thinkingUsed = true;
+        bool mediaUsed = false;
 
         for (int attempt = 0; attempt < maxAttempts; attempt++)
         {
@@ -475,7 +476,7 @@ public partial class LanguageModelRouter(
                 HttpResponseMessage? response;
                 try
                 {
-                    response = await SendAsync(client, request, cancellationToken);
+                    response = await SendAsync(client, request, mediaIncluded, cancellationToken);
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
@@ -502,6 +503,7 @@ public partial class LanguageModelRouter(
                 {
                     successResponse = response;
                     thinkingUsed = thinking;
+                    mediaUsed = mediaIncluded;
                     lastRequestIncludedMedia = mediaIncluded;
                     MarkServed(group, attempt > 0);
                     break;
@@ -567,16 +569,19 @@ public partial class LanguageModelRouter(
         using (successResponse)
         {
             await ReadResponseAsync(
-                successResponse, thinkingUsed, messageBuilder, thinkingBuilder, textReceived, thinkReceived, usageReceived, cancellationToken);
+                successResponse, thinkingUsed, mediaUsed,
+                messageBuilder, thinkingBuilder, textReceived, thinkReceived, usageReceived, cancellationToken);
         }
     }
 
-    /// <summary>发送单个渠道请求：按 RequestTimeoutMs 限制"等待响应头"的时长，正文流不受该超时限制。</summary>
-    async Task<HttpResponseMessage> SendAsync(HttpClient client, HttpRequestMessage request, CancellationToken cancellationToken)
+    /// <summary>
+    /// 发送单个渠道请求：按 RequestTimeoutMs 限制"等待响应头"的时长，正文流不受该超时限制。
+    /// 带媒体的请求（图片/视频/音频，base64 上传体积大）改用「带媒体请求超时」，避免被普通文本的超时误杀。
+    /// </summary>
+    async Task<HttpResponseMessage> SendAsync(
+        HttpClient client, HttpRequestMessage request, bool mediaIncluded, CancellationToken cancellationToken)
     {
-        int configured = Configuration.RequestTimeoutMs;
-        // 有效超时：<=0 视为关闭但保留 100s 兜底；>0 时下限 1s、上限 300s
-        int timeoutMs = configured > 0 ? Math.Clamp(configured, 1000, 300000) : 100000;
+        int timeoutMs = ResolveHeaderTimeoutMs(mediaIncluded);
 
         using CancellationTokenSource timeoutSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutSource.CancelAfter(timeoutMs);
@@ -586,14 +591,37 @@ public partial class LanguageModelRouter(
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested == false)
         {
-            throw new TimeoutException($"灵枢：渠道请求超时（{timeoutMs}ms 未收到响应头）");
+            throw new TimeoutException($"灵枢：渠道请求超时（{timeoutMs}ms 未收到响应头{(mediaIncluded ? "，本轮含媒体" : "")}）");
         }
     }
 
-    /// <summary>读取响应：SSE 走逐帧解析，非流式（部分渠道忽略 stream）走整包 JSON 兼容解析。</summary>
+    /// <summary>等待响应头的超时：普通请求按 RequestTimeoutMs；含媒体时取两者较大值（上传大图更慢）。</summary>
+    int ResolveHeaderTimeoutMs(bool mediaIncluded)
+    {
+        LanguageModelRouterConfig? cfg = Configuration;
+        int configured = cfg?.RequestTimeoutMs ?? 30000;
+        // 有效超时：<=0 视为关闭但保留 100s 兜底；>0 时下限 1s、上限 300s
+        int baseMs = configured > 0 ? Math.Clamp(configured, 1000, 300000) : 100000;
+
+        int mediaMs = ResolveMediaRequestTimeoutMs(cfg);
+        return mediaIncluded && mediaMs > 0 ? Math.Max(baseMs, mediaMs) : baseMs;
+    }
+
+    /// <summary>「带媒体请求超时」毫秒值（0 = 未配置）。</summary>
+    static int ResolveMediaRequestTimeoutMs(LanguageModelRouterConfig? cfg)
+    {
+        int seconds = cfg?.MediaRequestTimeoutSeconds ?? 0;
+        return seconds > 0 ? Math.Clamp(seconds, 5, 600) * 1000 : 0;
+    }
+
+    /// <summary>
+    /// 读取响应：SSE 走逐帧解析，非流式（部分渠道忽略 stream）走整包 JSON 兼容解析。
+    /// 含媒体的请求额外受「带媒体请求超时」约束：上游接了图却长时间不吐数据时不会无限期挂着（桌宠看图的卡死点之一）。
+    /// </summary>
     async Task ReadResponseAsync(
         HttpResponseMessage response,
         bool thinking,
+        bool mediaIncluded,
         StringBuilder messageBuilder,
         StringBuilder thinkingBuilder,
         Action<string>? textReceived,
@@ -601,7 +629,7 @@ public partial class LanguageModelRouter(
         Action<TokenUsage> usageReceived,
         CancellationToken cancellationToken)
     {
-        int idleTimeoutMs = Configuration.StreamIdleTimeoutMs;
+        int idleTimeoutMs = ResolveIdleTimeoutMs(mediaIncluded);
         bool showThinking = Configuration.ShowThinkingChain;
 
         void OnReasoning(string text)
@@ -670,6 +698,22 @@ public partial class LanguageModelRouter(
 
         if (lastUsage != null)
             usageReceived(lastUsage.Value);
+    }
+
+    /// <summary>
+    /// 响应空闲超时：普通请求沿用 StreamIdleTimeoutMs；含媒体的请求至少按「带媒体请求超时」兜底，
+    /// 两者都配置时取更严格的那个，保证"看图的请求挂住了"最终一定会失败退出而不是永久卡死。
+    /// </summary>
+    int ResolveIdleTimeoutMs(bool mediaIncluded)
+    {
+        LanguageModelRouterConfig? cfg = Configuration;
+        int idle = cfg?.StreamIdleTimeoutMs ?? 0;
+        int mediaMs = ResolveMediaRequestTimeoutMs(cfg);
+
+        if (mediaIncluded == false || mediaMs <= 0)
+            return idle;
+
+        return idle > 0 ? Math.Min(idle, mediaMs) : mediaMs;
     }
 
     /// <summary>读取非流式响应体（受流空闲超时约束）。</summary>

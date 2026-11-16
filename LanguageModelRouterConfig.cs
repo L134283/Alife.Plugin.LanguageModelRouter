@@ -138,6 +138,31 @@ public class LanguageModelRouterConfig
     public int MediaMaxMegabytes { get; set; } = 10;          // 单个媒体文件上限（MB），超过直接拒绝发送，避免 413
     public bool DebugLogPayload { get; set; } = false;        // 调试日志：打印请求摘要与上游原始错误体（默认关）
 
+    // === 看图防卡死（v5.0.2）===
+    /// <summary>
+    /// 网络内容（图片/视频/音频链接）下载超时（秒）：超时立刻放弃并告诉 AI/用户，不再无限期挂住。
+    /// 0 = 退回旧的 180 秒兜底。QQ 图片链接偶发不响应时，这条是"看个图把桌宠卡死"的第一道保险。
+    /// </summary>
+    public int MediaLoadTimeoutSeconds { get; set; } = 30;
+
+    /// <summary>
+    /// 带媒体的模型请求超时（秒）：覆盖"等待响应头"与"响应流空闲"两个阶段，两者都配置时取更严格的。
+    /// 0 = 不额外限制（沿用 RequestTimeoutMs / StreamIdleTimeoutMs）。上游接了图却不吐数据时，靠它退出卡死。
+    /// </summary>
+    public int MediaRequestTimeoutSeconds { get; set; } = 120;
+
+    /// <summary>
+    /// 同一链接的本地缓存复用时长（分钟）：期间重复查看/重试直接读本地文件，不再联网。
+    /// 0 = 每次重新下载。
+    /// </summary>
+    public int MediaCacheMinutes { get; set; } = 10;
+
+    /// <summary>
+    /// 链接加载失败（超时/断网）后的暂停重试时长（秒）：期间同一链接直接拒绝，避免反复卡在同一张图。
+    /// 0 = 不禁用重试。
+    /// </summary>
+    public int MediaFailureCooldownSeconds { get; set; } = 120;
+
     // === 自定义命令（v5.0.1，默认关闭）===
     public bool EnableCustomCommands { get; set; } = false;   // 总开关，默认关闭
     public List<CommandRule> CommandRules { get; set; } = new(); // 命令表；为空时使用默认两条

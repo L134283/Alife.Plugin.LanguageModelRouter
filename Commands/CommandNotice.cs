@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
@@ -28,9 +29,16 @@ public partial class LanguageModelRouter
         "AppendDocumentPrompt"
     ];
 
-    /// <summary>QQ 提示词原文缓存（配置改了也能在 1 分钟内跟上）。</summary>
-    string[]? qqWrapperTextsCache;
-    DateTime qqWrapperTextsCacheTime;
+    /// <summary>「消息过滤」插件配置里会追加到消息末尾的属性名。</summary>
+    static readonly string[] MessageFilterPromptPropertyNames =
+    [
+        "MessageAppend",
+        "PokeAppend"
+    ];
+
+    /// <summary>已知追加文案缓存（配置改了也能在 1 分钟内跟上）。</summary>
+    string[]? knownWrapperTextsCache;
+    DateTime knownWrapperTextsCacheTime;
 
     /// <summary>待发送的命令提示目标（命令轮串行执行，单字段即可）。</summary>
     CommandNotice? pendingCommandNotice;
@@ -102,23 +110,69 @@ public partial class LanguageModelRouter
     }
 
     /// <summary>
-    /// 取 QQ 插件当前配置的提示词原文（私聊/群聊/文档）。
-    /// 这些提示词会被 QQ 插件原样追加到消息末尾，用户可写成任意形状（括号、引号、【】或纯文本），
-    /// 因此按"原文精确剔除"处理，不依赖形状推断。
+    /// 取"会被框架/插件追加到用户消息里"的已知文案原文：QQ 插件的私聊/群聊/文档提示词，
+    /// 以及「消息过滤」插件的通用提示词（含各模块通过 AddMessageReplyGuidance 追加的引导语）。
+    /// 这些文案用户可写成任意形状（括号、引号、【】或纯文本），因此按"原文精确剔除"处理，不依赖形状推断。
+    /// 桌面端命令失效的主因就在这里：通用提示词是纯文本时，会被当成"用户还说了别的"而拒绝执行命令。
     /// </summary>
-    IReadOnlyList<string> GetQqWrapperTexts()
+    IReadOnlyList<string> GetKnownWrapperTexts()
     {
-        if (qqWrapperTextsCache != null && (DateTime.Now - qqWrapperTextsCacheTime).TotalSeconds < 60)
-            return qqWrapperTextsCache;
+        if (knownWrapperTextsCache != null && (DateTime.Now - knownWrapperTextsCacheTime).TotalSeconds < 60)
+            return knownWrapperTextsCache;
 
         List<string> texts = new();
+        CollectQqPromptTexts(texts);
+        CollectMessageFilterTexts(texts);
+
+        knownWrapperTextsCache = texts.Distinct().ToArray();
+        knownWrapperTextsCacheTime = DateTime.Now;
+        return knownWrapperTextsCache;
+    }
+
+    /// <summary>QQ 插件当前配置的提示词原文（私聊/群聊/文档）。</summary>
+    void CollectQqPromptTexts(List<string> texts)
+    {
         try
         {
             object? service = FindQqService();
             object? config = service?.GetType().GetProperty("Configuration")?.GetValue(service);
+            if (config == null)
+                return;
+
+            foreach (string name in QqPromptPropertyNames)
+            {
+                if (config.GetType().GetProperty(name)?.GetValue(config) is string text
+                    && string.IsNullOrWhiteSpace(text) == false)
+                {
+                    texts.Add(text);
+                }
+            }
+        }
+        catch (Exception e)
+        {
+            Console.WriteLine($"[灵枢] 读取 QQ 提示词失败（不影响命令判定）：{e.Message}");
+        }
+    }
+
+    /// <summary>
+    /// 「消息过滤」插件的通用提示词与各模块追加的引导语。
+    /// guidance 是 List&lt;Func&lt;string&gt;&gt;，只有调用后才能拿到真正追加的文本（可能是任意形状）。
+    /// </summary>
+    void CollectMessageFilterTexts(List<string> texts)
+    {
+        try
+        {
+            object? service = ChatActivity?.Container?.Instances
+                .FirstOrDefault(instance => instance.GetType().FullName == "Alife.Function.MessageFilter.MessageFilterService");
+            if (service == null)
+                return;
+
+            Type type = service.GetType();
+
+            object? config = type.GetProperty("Configuration")?.GetValue(service);
             if (config != null)
             {
-                foreach (string name in QqPromptPropertyNames)
+                foreach (string name in MessageFilterPromptPropertyNames)
                 {
                     if (config.GetType().GetProperty(name)?.GetValue(config) is string text
                         && string.IsNullOrWhiteSpace(text) == false)
@@ -127,15 +181,31 @@ public partial class LanguageModelRouter
                     }
                 }
             }
+
+            if (type.GetField("messageReplyGuidance",
+                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)?.GetValue(service) is IEnumerable guidances)
+            {
+                foreach (object? item in guidances)
+                {
+                    if (item is not Delegate func)
+                        continue;
+
+                    try
+                    {
+                        if (func.DynamicInvoke() is string text && string.IsNullOrWhiteSpace(text) == false)
+                            texts.Add(text);
+                    }
+                    catch
+                    {
+                        // 单个引导语取不到就跳过，不影响命令判定
+                    }
+                }
+            }
         }
         catch (Exception e)
         {
-            Console.WriteLine($"[灵枢] 读取 QQ 提示词失败（不影响命令判定）：{e.Message}");
+            Console.WriteLine($"[灵枢] 读取「消息过滤」提示词失败（不影响命令判定）：{e.Message}");
         }
-
-        qqWrapperTextsCache = texts.ToArray();
-        qqWrapperTextsCacheTime = DateTime.Now;
-        return qqWrapperTextsCache;
     }
 
     /// <summary>
